@@ -4,8 +4,9 @@
 // @match       https://worker.mturk.com/tasks
 // @grant       GM_xmlhttpRequest
 // @version     1.6
-// @updateURL    https://raw.githubusercontent.com/Vinylgeorge/mturk-hit-monitor/refs/heads/main/mon.user.js
-// @downloadURL  https://raw.githubusercontent.com/Vinylgeorge/mturk-hit-monitor/refs/heads/main/mon.user.js
+// @updateURL    https://raw.githubusercontent.com/Vinylgeorge/Team-perundurai/refs/heads/main/hit-monitor.user.js
+// @downloadURL  https://raw.githubusercontent.com/Vinylgeorge/Team-perundurai/refs/heads/main/hit-monitor.user.js
+
 // ==/UserScript==
 
 (function () {
