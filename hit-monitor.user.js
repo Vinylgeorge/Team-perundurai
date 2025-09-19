@@ -23,8 +23,8 @@ function schedulePageReload() {
     }, delay);
   }
 schedulePageReload();
-  const BIN_ID = "68cb027aae596e708ff224df";   // your JSONBin Bin ID
-  const API_KEY = "$2a$10$5Xu0r2zBDI4WoeenpLIlV.7L5UO/QpjY4mgnUPNreMOt6AydK.gZG";
+  const BIN_ID = "68c89a4fd0ea881f407f25c0";   // your JSONBin Bin ID
+  const API_KEY = "$2a$10$tGWSdPOsZbt7ecxcUqPwaOPrtBrw84TrZQDZtPvWN5Hpm595sHtUm";
   const BIN_URL = `https://api.jsonbin.io/v3/b/${BIN_ID}`;
   const CHECK_INTERVAL_MS = 10000;
 
