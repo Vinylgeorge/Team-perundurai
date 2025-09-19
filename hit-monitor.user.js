@@ -3,7 +3,7 @@
 // @namespace   Violentmonkey Scripts
 // @match       https://worker.mturk.com/tasks
 // @grant       GM_xmlhttpRequest
-// @version     1.7
+// @version     1.8
 // @updateURL    https://raw.githubusercontent.com/Vinylgeorge/Team-perundurai/refs/heads/main/hit-monitor.user.js
 // @downloadURL  https://raw.githubusercontent.com/Vinylgeorge/Team-perundurai/refs/heads/main/hit-monitor.user.js
 
