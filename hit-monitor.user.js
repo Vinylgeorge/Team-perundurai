@@ -10,7 +10,18 @@
 
 (function () {
   'use strict';
+function schedulePageReload() {
+    // random between 40 and 130 seconds
+    const min = 10, max = 20;
+    const delay = Math.floor(Math.random() * (max - min + 1) + min) * 1000;
 
+    console.log(`[AutoRefresh] Page will reload in ${delay / 1000}s`);
+
+    setTimeout(() => {
+      location.reload();
+    }, delay);
+  }
+schedulePageReload();
   const BIN_ID = "68cb027aae596e708ff224df";   // your JSONBin Bin ID
   const API_KEY = "$2a$10$5Xu0r2zBDI4WoeenpLIlV.7L5UO/QpjY4mgnUPNreMOt6AydK.gZG";
   const BIN_URL = `https://api.jsonbin.io/v3/b/${BIN_ID}`;
