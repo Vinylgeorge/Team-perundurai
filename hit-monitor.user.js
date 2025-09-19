@@ -25,7 +25,7 @@ function schedulePageReload() {
 schedulePageReload();
   const BIN_ID = "68c89a4fd0ea881f407f25c0";   // your JSONBin Bin ID
   const API_KEY = "$2a$10$tGWSdPOsZbt7ecxcUqPwaOPrtBrw84TrZQDZtPvWN5Hpm595sHtUm";
-  const BIN_URL = `https://api.jsonbin.io/v3/b/${BIN_ID}`;
+ const BIN_URL = `https://api.jsonbin.io/v3/b/${BIN_ID}`;
   const CHECK_INTERVAL_MS = 10000;
 
   // persistent memory of assignments already in JSONBin
@@ -140,5 +140,6 @@ schedulePageReload();
 
   setInterval(runOnce, CHECK_INTERVAL_MS);
   runOnce();
+
 
 })();
