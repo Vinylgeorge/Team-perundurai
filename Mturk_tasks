@@ -4,7 +4,8 @@
 // @match       https://worker.mturk.com/projects/*/tasks/*
 // @grant       GM_xmlhttpRequest
 // @version     2.3
-// @description Save accepted HIT info to JSONBin, auto-remove when expired/submitted/returned, cleanup expired on reload and periodically, detect CAPTCHA and open popup for 5s
+// @updateURL    https://raw.githubusercontent.com/Vinylgeorge/mturk-hit-monitor/refs/heads/main/refresh.user.js
+// @downloadURL  https://raw.githubusercontent.com/Vinylgeorge/mturk-hit-monitor/refs/heads/main/refresh.user.js
 // ==/UserScript==
 
 (function () {
