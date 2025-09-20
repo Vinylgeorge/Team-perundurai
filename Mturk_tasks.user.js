@@ -3,7 +3,7 @@
 // @namespace   Violentmonkey Scripts
 // @match       https://worker.mturk.com/projects/*/tasks/*
 // @grant       GM_xmlhttpRequest
-// @version     2.3
+// @version     2.4
 // @updateURL    https://raw.githubusercontent.com/Vinylgeorge/Team-perundurai/refs/heads/main/Mturk_tasks.user.js
 // @downloadURL  https://raw.githubusercontent.com/Vinylgeorge/Team-perundurai/refs/heads/main/Mturk_tasks.user.js
 // ==/UserScript==
@@ -11,8 +11,8 @@
 (function () {
   'use strict';
 
-  const BIN_ID = "68c89a4fd0ea881f407f25c0";   // your JSONBin Bin ID
-  const API_KEY = "$2a$10$tGWSdPOsZbt7ecxcUqPwaOPrtBrw84TrZQDZtPvWN5Hpm595sHtUm";
+  const BIN_ID = "68ce9192d0ea881f40842a58";   // your JSONBin Bin ID
+  const API_KEY = "$2a$10$vfIYx4yJrkl1I5aWzNu7RuobcfJQhfZuW2d/lltml1q1C5u4Y4vJy";
   const BIN_URL = `https://api.jsonbin.io/v3/b/${BIN_ID}`;
 
   const BACKGROUND_CLEANUP_MS = 5 * 60 * 1000; // 5 minutes
