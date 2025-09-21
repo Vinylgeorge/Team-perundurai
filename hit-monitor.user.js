@@ -1,44 +1,19 @@
 // ==UserScript==
-// @name        MTurk Queue → JSONBin (New Work Only, Prune Finished)
+// @name        MTurk Accepted HITs → JSONBin (Auto-Prune + Cleanup + Captcha Alert)
 // @namespace   Violentmonkey Scripts
-// @match       https://worker.mturk.com/tasks
+// @match       https://worker.mturk.com/projects/*/tasks/*
 // @grant       GM_xmlhttpRequest
-// @version     1.9
+// @version     2.0
 // @updateURL    https://raw.githubusercontent.com/Vinylgeorge/Team-perundurai/refs/heads/main/hit-monitor.user.js
 // @downloadURL  https://raw.githubusercontent.com/Vinylgeorge/Team-perundurai/refs/heads/main/hit-monitor.user.js
-
 // ==/UserScript==
 
 (function () {
   'use strict';
-function schedulePageReload() {
-    // random between 40 and 130 seconds
-    const min = 10, max = 20;
-    const delay = Math.floor(Math.random() * (max - min + 1) + min) * 1000;
-
-    console.log(`[AutoRefresh] Page will reload in ${delay / 1000}s`);
-
-    setTimeout(() => {
-      location.reload();
-    }, delay);
-  }
-
-  // start the first timer
-  schedulePageReload();
 
   const BIN_ID = "68c89a4fd0ea881f407f25c0";   // your JSONBin Bin ID
   const API_KEY = "$2a$10$tGWSdPOsZbt7ecxcUqPwaOPrtBrw84TrZQDZtPvWN5Hpm595sHtUm";
   const BIN_URL = `https://api.jsonbin.io/v3/b/${BIN_ID}`;
-  const CHECK_INTERVAL_MS = 10000;
-
-  let knownAssignments = new Set();
-  let initialized = false;
-
-  function decodeEntities(str) {
-    const txt = document.createElement("textarea");
-    txt.innerHTML = str;
-    return txt.value;
-  }
 
   async function fetchExistingBin() {
     try {
@@ -55,20 +30,7 @@ function schedulePageReload() {
     }
   }
 
-  async function saveQueue(newQueue) {
-    const existing = await fetchExistingBin();
-    if (!Array.isArray(existing)) return;
-
-    const currentWorkerId = newQueue[0]?.workerId || "";
-
-    // Keep everything except old entries from this worker
-    let merged = existing.filter(r => r.workerId !== currentWorkerId);
-
-    // Add this worker's fresh active queue
-    for (const row of newQueue) {
-      merged.push(row);
-    }
-
+  async function saveBin(records) {
     GM_xmlhttpRequest({
       method: "PUT",
       url: BIN_URL,
@@ -76,70 +38,121 @@ function schedulePageReload() {
         "Content-Type": "application/json",
         "X-Master-Key": API_KEY
       },
-      data: JSON.stringify({ record: merged }),
-      onload: r => console.log("[MTurk→JSONBin] ✅ Updated queue:", merged.length, "rows"),
+      data: JSON.stringify({ record: records }),
+      onload: r => console.log("[MTurk→JSONBin] ✅ Bin updated, total:", records.length),
       onerror: e => console.error("[MTurk→JSONBin] ❌ Error:", e)
     });
   }
 
-  function scrapeQueue() {
-    const el = document.querySelector("[data-react-class*='TaskQueueTable']");
-    if (!el) return [];
+  async function saveHit(newHit) {
+    const existing = await fetchExistingBin();
+    if (!Array.isArray(existing)) return;
 
+    let merged = existing.filter(r => r.assignmentId !== newHit.assignmentId);
+    merged.push(newHit);
+
+    await saveBin(merged);
+  }
+
+  async function removeHit(assignmentId) {
+    const existing = await fetchExistingBin();
+    if (!Array.isArray(existing)) return;
+
+    let merged = existing.filter(r => r.assignmentId !== assignmentId);
+    await saveBin(merged);
+    console.log("[MTurk→JSONBin] 🗑️ Removed HIT:", assignmentId);
+  }
+
+  async function cleanupExpired() {
+    const existing = await fetchExistingBin();
+    if (!Array.isArray(existing)) return;
+
+    const now = Date.now();
+    let stillValid = existing.filter(r => {
+      if (!r.timeRemainingSeconds || !r.acceptedAt) return true;
+      const acceptedAt = new Date(r.acceptedAt).getTime();
+      const expiresAt = acceptedAt + r.timeRemainingSeconds * 1000;
+      return expiresAt > now;
+    });
+
+    if (stillValid.length !== existing.length) {
+      console.log(`[MTurk→JSONBin] 🧹 Cleaned up ${existing.length - stillValid.length} expired HIT(s)`);
+      await saveBin(stillValid);
+    }
+  }
+
+  function scrapeHitInfo() {
     try {
-      const props = JSON.parse(decodeEntities(el.getAttribute("data-react-props")));
-      if (!props.bodyData || !Array.isArray(props.bodyData)) return [];
+      const requester = document.querySelector(".detail-bar-value a[href*='/requesters']")?.innerText.trim() || "Unknown";
+      const title = document.querySelector(".task-project-title")?.innerText.trim() || document.title;
+      let rewardText = document.querySelector(".detail-bar-value")?.innerText.trim() || "0";
+      rewardText = rewardText.replace(/[^0-9.]/g, "");
 
-      return props.bodyData.map(hit => ({
-        assignmentId: hit.assignment_id,
-        hitId: hit.task_id,
-        workerId: hit.question.value.match(/workerId=([^&]+)/)?.[1] || "",
-        requester: hit.project?.requester_name || "Unknown",
-        title: hit.project?.title || "N/A",
-        reward: hit.project?.monetary_reward?.amount_in_dollars || 0,
-        timeRemainingSeconds: hit.time_to_deadline_in_seconds,
-        acceptedAt: hit.accepted_at,
-        deadline: hit.deadline,
-        url: decodeEntities(hit.question.value),
-        updatedAt: new Date().toISOString()
-      }));
+      const workerId = document.querySelector(".me-bar span.text-uppercase span")?.innerText.trim() || "";
+      const username = document.querySelector(".me-bar a[href='/account']")?.innerText.trim() || "";
+      const assignmentId = new URLSearchParams(window.location.search).get("assignment_id") || "";
+      const url = window.location.href;
+
+      let timeRemainingSeconds = null;
+      const timer = document.querySelector("[data-react-class*='CompletionTimer']");
+      if (timer?.getAttribute("data-react-props")) {
+        try {
+          const props = JSON.parse(timer.getAttribute("data-react-props"));
+          timeRemainingSeconds = props.timeRemainingInSeconds;
+        } catch {}
+      }
+
+      return {
+        assignmentId,
+        requester,
+        title,
+        reward: parseFloat(rewardText) || 0,
+        workerId,
+        username,
+        acceptedAt: new Date().toISOString(),
+        url,
+        timeRemainingSeconds
+      };
     } catch (err) {
       console.error("[MTurk→JSONBin] ❌ Scrape failed:", err);
-      return [];
+      return null;
     }
   }
 
-  async function initKnownAssignments() {
-    if (initialized) return;
-    const existing = await fetchExistingBin();
-    for (const row of existing) {
-      knownAssignments.add(row.assignmentId);
-    }
-    initialized = true;
-    console.log("[MTurk→JSONBin] Known assignments initialized:", knownAssignments.size);
-  }
-
-  async function runOnce() {
-    await initKnownAssignments();
-
-    const queue = scrapeQueue();
-    if (queue.length === 0) {
-      console.log("[MTurk→JSONBin] Queue empty — no API call.");
-      return;
-    }
-
-    const newOnes = queue.filter(hit => !knownAssignments.has(hit.assignmentId));
-
-    if (newOnes.length > 0) {
-      console.log("[MTurk→JSONBin] ✨ New work detected:", newOnes.map(h => h.assignmentId));
-      await saveQueue(queue);
-      for (const row of queue) knownAssignments.add(row.assignmentId);
-    } else {
-      console.log("[MTurk→JSONBin] No new work — skipping API call.");
+  function detectCaptcha() {
+    const captcha = document.querySelector("iframe[src*='captcha'], input[name='captcha'], .g-recaptcha");
+    if (captcha) {
+      console.log("[MTurk→JSONBin] ⚠️ Captcha detected");
+      const w = window.open("", "captchaAlert", "width=300,height=150");
+      if (w) {
+        w.document.write("<h3 style='font-family:sans-serif;color:red;text-align:center;'>⚠️ CAPTCHA detected! ⚠️</h3>");
+        setTimeout(() => w.close(), 5000);
+      }
     }
   }
 
-  setInterval(runOnce, CHECK_INTERVAL_MS);
-  runOnce();
+  function hookFormSubmissions(assignmentId) {
+    const forms = document.querySelectorAll("form[action*='/submit'], form[action*='/return'], form[action*='/tasks']");
+    forms.forEach(f => {
+      f.addEventListener("submit", () => removeHit(assignmentId));
+    });
+  }
 
+  function run() {
+    cleanupExpired();
+    detectCaptcha();
+
+    const hit = scrapeHitInfo();
+    if (hit && hit.assignmentId) {
+      saveHit(hit);
+
+      if (hit.timeRemainingSeconds) {
+        setTimeout(() => removeHit(hit.assignmentId), hit.timeRemainingSeconds * 1000);
+      }
+
+      hookFormSubmissions(hit.assignmentId);
+    }
+  }
+
+  window.addEventListener("load", run);
 })();
