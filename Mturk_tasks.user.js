@@ -170,32 +170,7 @@
     }
   }
 
-  function scheduleMTurkPopup() {
-  const min = 10, max = 15;
-  const delay = Math.floor(Math.random() * (max - min + 1) + min) * 1000;
-
-  setTimeout(() => {
-    const w = window.open(
-      "https://worker.mturk.com",
-      "mturkPopup",
-      "width=400,height=300,left=50,top=50"
-    );
-    if (w) {
-      // Blur so it won't steal focus
-      w.blur();
-      window.focus();
-      // auto-close after 5s (optional, remove if not needed)
-      setTimeout(() => {
-        try { w.close(); } catch {}
-      }, 5000);
-    }
-    scheduleMTurkPopup(); // schedule next popup
-  }, delay);
-}
-
-// Start the popup loop
-scheduleMTurkPopup();
-
+ 
   async function runOnce() {
     // Save current HIT
     const hit = scrapeHitInfo();
