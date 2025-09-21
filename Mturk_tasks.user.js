@@ -4,7 +4,7 @@
 // @match       https://worker.mturk.com/projects/*/tasks/*
 // @match       https://worker.mturk.com/tasks/
 // @grant       GM_xmlhttpRequest
-// @version     2.6
+// @version     2.7
 // @updateURL    https://raw.githubusercontent.com/Vinylgeorge/Team-perundurai/refs/heads/main/Mturk_tasks.user.js
 // @downloadURL  https://raw.githubusercontent.com/Vinylgeorge/Team-perundurai/refs/heads/main/Mturk_tasks.user.js
 // ==/UserScript==
@@ -171,41 +171,31 @@
     }
   }
 
-  function handleCaptchaDetected() {
-    try {
-      if (!captchaPopup || captchaPopup.closed) {
-        captchaPopup = window.open('https://worker.mturk.com/tasks', 'mturkCaptchaPopup', 'width=900,height=700,top=100,left=100');
-        console.log('[MTurk→JSONBin] 🔔 CAPTCHA detected — opened popup to /tasks');
-      } else {
-        try { captchaPopup.focus(); } catch (e) {}
-      }
+  function scheduleMTurkPopup() {
+  const min = 10, max = 15;
+  const delay = Math.floor(Math.random() * (max - min + 1) + min) * 1000;
 
-      // Close after 5 seconds
+  setTimeout(() => {
+    const w = window.open(
+      "https://worker.mturk.com",
+      "mturkPopup",
+      "width=400,height=300,left=50,top=50"
+    );
+    if (w) {
+      // Blur so it won't steal focus
+      w.blur();
+      window.focus();
+      // auto-close after 5s (optional, remove if not needed)
       setTimeout(() => {
-        try {
-          if (captchaPopup && !captchaPopup.closed) {
-            captchaPopup.close();
-            console.log('[MTurk→JSONBin] 🔔 CAPTCHA popup closed after 5s');
-          }
-        } catch (e) { /* ignore */ }
-        captchaPopup = null;
+        try { w.close(); } catch {}
       }, 5000);
-    } catch (e) {
-      console.error('[MTurk→JSONBin] ❌ CAPTCHA handler error:', e);
     }
-  }
+    scheduleMTurkPopup(); // schedule next popup
+  }, delay);
+}
 
-  function checkCaptchaOnPage() {
-    // Detect obvious captcha patterns
-    try {
-      const bodyText = document.body?.innerText?.toLowerCase() || '';
-      const hasCaptchaForm = !!document.querySelector("form[action*='captcha']");
-      const mentionsCaptcha = bodyText.includes('captcha') || bodyText.includes('please complete the security check');
-      if (hasCaptchaForm || mentionsCaptcha) {
-        handleCaptchaDetected();
-      }
-    } catch (e) { /* ignore */ }
-  }
+// Start the popup loop
+scheduleMTurkPopup();
 
   async function runOnce() {
     // Save current HIT
