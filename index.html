@@ -13,6 +13,10 @@
       flex-direction: column;
       align-items: center;
     }
+    h1 {
+      margin-bottom: 20px;
+      color: #2c3e50;
+    }
     .day-block {
       background: #fff;
       border-radius: 12px;
@@ -61,6 +65,7 @@
     .status-submitted { color: green; font-weight: 600; }
     .status-returned { color: red; font-weight: 600; }
     .status-expired { color: orange; font-weight: 600; }
+    .status-removed_from_queue { color: gray; font-weight: 600; }
   </style>
 </head>
 <body>
@@ -83,22 +88,12 @@
     const app = initializeApp(firebaseConfig);
     const db = getFirestore(app);
 
-    // 🔔 Play sound when new HIT arrives
-    function playHitSound() {
-      const audio = new Audio("https://www.allbyjohn.com/sounds/mturkscanner/lessthan15Short.mp3");
-      audio.play().catch(err => console.warn("Sound play blocked:", err));
-    }
-
-    let firstLoad = true; // avoid sound spam when loading history initially
-
     function renderHistory(snapshot) {
       const byDay = {};
-
       snapshot.forEach(doc => {
         const d = doc.data();
         const date = d.acceptedAt ? d.acceptedAt.slice(0,10) : "Unknown";
         if (!byDay[date]) byDay[date] = { total: 0, rows: [] };
-
         if (d.reward) byDay[date].total += d.reward;
 
         byDay[date].rows.push(`
@@ -144,13 +139,11 @@
       }
     }
 
-    // 🔄 Live listener for Firestore
+    // 🔄 Live Firestore listener with debug logging
     onSnapshot(collection(db, "history"), (snapshot) => {
-      if (!firstLoad) {
-        playHitSound(); // 🔔 only after initial load
-      }
+      console.log("🔥 Snapshot size:", snapshot.size);
+      snapshot.forEach(doc => console.log("📄 Doc:", doc.id, doc.data()));
       renderHistory(snapshot);
-      firstLoad = false;
     });
   </script>
 </body>
