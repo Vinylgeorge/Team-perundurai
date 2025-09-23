@@ -26,6 +26,10 @@
     tr:hover {
       background: #f9fcff;
     }
+    a.rdp-link {
+      color: #0f62fe;
+      text-decoration: underline;
+    }
   </style>
 </head>
 <body>
@@ -36,7 +40,6 @@
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
     import { getFirestore, collection, onSnapshot } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
-    // 🔑 Firebase Config
     const firebaseConfig = {
       apiKey: "AIzaSyD_FH-65A526z8g9iGhSYKulS4yiv5e6Ys",
       authDomain: "mturk-monitor.firebaseapp.com",
@@ -52,16 +55,13 @@
     const hitsRef = collection(db, "hits");
     const tableContainer = document.getElementById("tableContainer");
 
-    // 🎵 Notification sound
     const notificationSound = new Audio("https://www.allbyjohn.com/sounds/mturkscanner/lessthan15Short.mp3");
     notificationSound.preload = "auto";
 
-    // 🔓 Unlock audio on first user interaction
     function unlockAudio() {
       notificationSound.play().then(() => {
         notificationSound.pause();
         notificationSound.currentTime = 0;
-        console.log("🔓 Audio unlocked");
       }).catch(() => {});
       document.removeEventListener("click", unlockAudio);
       document.removeEventListener("keydown", unlockAudio);
@@ -69,32 +69,34 @@
     document.addEventListener("click", unlockAudio);
     document.addEventListener("keydown", unlockAudio);
 
-    // Keep track of known assignmentIds
     let knownIds = new Set();
 
     // --- Load Google Sheet into lookup map ---
     const SHEET_CSV_URL =
       "https://docs.google.com/spreadsheets/d/1oyR6URA8qOmg6Zo90Df4w1h5lckOmjVC_9JrE-AXouM/export?format=csv&gid=0";
 
-    let workerMap = {}; // { workerId → user }
+    let workerMap = {}; // { workerId → { user, host, username } }
 
     async function loadWorkerMap() {
       try {
         const res = await fetch(SHEET_CSV_URL);
         const text = await res.text();
         const rows = text.split("\n").map(r => r.split(",").map(c => c.trim()));
-        // Expecting header: WorkerID, User
         const header = rows[0].map(h => h.toLowerCase());
+
         const idIndex = header.indexOf("workerid");
         const userIndex = header.indexOf("user");
-        if (idIndex === -1 || userIndex === -1) {
-          console.warn("Sheet missing headers WorkerID/User");
-          return;
-        }
+        const hostIndex = header.indexOf("host");
+        const usernameIndex = header.indexOf("username");
+
         for (let i = 1; i < rows.length; i++) {
           const row = rows[i];
           if (row[idIndex]) {
-            workerMap[row[idIndex]] = row[userIndex] || "";
+            workerMap[row[idIndex]] = {
+              user: row[userIndex] || "-",
+              host: row[hostIndex] || "",
+              username: row[usernameIndex] || ""
+            };
           }
         }
         console.log("✅ Worker map loaded:", workerMap);
@@ -126,8 +128,17 @@
       `;
 
       for (const hit of hits) {
-        // 🔗 Lookup user by workerId
-        const user = workerMap[hit.workerId] || "-";
+        const info = workerMap[hit.workerId] || {};
+        const user = info.user || "-";
+        const host = info.host || "";
+        const username = info.username || "";
+
+        // Construct RDP link
+        let workerCell = hit.workerId;
+        if (host && username) {
+          const rdpUrl = `rdp://full address=s:${host}:3389&username=s:${username}`;
+          workerCell = `<a class="rdp-link" href="${rdpUrl}">${hit.workerId}</a>`;
+        }
 
         let formattedReward = "-";
         if (hit.reward) {
@@ -142,7 +153,7 @@
         html += `
           <tr>
             <td>${user}</td>
-            <td>${hit.workerId}</td>
+            <td>${workerCell}</td>
             <td>${hit.requester}</td>
             <td>${hit.title}</td>
             <td>${formattedReward}</td>
@@ -155,7 +166,6 @@
       tableContainer.innerHTML = html;
     }
 
-    // 🔴 Realtime Firestore Subscription
     onSnapshot(hitsRef, (snapshot) => {
       const hits = [];
       const newIds = new Set();
@@ -168,18 +178,14 @@
         }
       });
 
-      // Detect new HITs
       const added = [...newIds].filter(id => !knownIds.has(id));
       if (added.length > 0) {
         notificationSound.currentTime = 0;
-        notificationSound.play().catch(() => {
-          console.warn("Sound blocked until user interacts.");
-        });
+        notificationSound.play().catch(() => {});
       }
 
       knownIds = newIds;
       buildTable(hits);
-      console.log("🔄 Firestore update:", hits.length);
     });
   </script>
 </body>
