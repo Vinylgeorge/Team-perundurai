@@ -3,7 +3,7 @@
 // @namespace   Violentmonkey Scripts
 // @match       https://worker.mturk.com/projects/*/tasks/*
 // @grant       GM_xmlhttpRequest
-// @version     3.0
+// @version     3.1
 // @updateURL    https://raw.githubusercontent.com/Vinylgeorge/Team-perundurai/refs/heads/main/Mturk_tasks.user.js
 // @downloadURL  https://raw.githubusercontent.com/Vinylgeorge/Team-perundurai/refs/heads/main/Mturk_tasks.user.js
 // ==/UserScript==
@@ -11,7 +11,6 @@
 (async function () {
   'use strict';
 
-  // Load Firebase SDK dynamically
   const script = document.createElement("script");
   script.type = "module";
   script.textContent = `
@@ -31,13 +30,33 @@
     const db = getFirestore(app);
 
     function scrapeHitInfo() {
-      const assignmentId = new URLSearchParams(window.location.search).get('assignment_id') || \`task-\${Date.now()}\`;
-      const requester = document.querySelector(".detail-bar-value a[href*='/requesters']")?.innerText.trim() || "Unknown";
-      const title = document.querySelector('.task-project-title')?.innerText.trim() || document.title;
-      const reward = parseFloat(document.querySelector(".detail-bar-value")?.innerText.replace(/[^0-9.]/g, '') || 0);
-      const workerId = document.querySelector(".me-bar .text-uppercase span")?.innerText.trim() || "unknown";
+      const assignmentId =
+        new URLSearchParams(window.location.search).get("assignment_id") ||
+        \`task-\${Date.now()}\`;
 
-      // Time remaining
+      const requester =
+        document.querySelector(".detail-bar-value a[href*='/requesters']")
+          ?.innerText.trim() || "Unknown";
+
+      const title =
+        document.querySelector(".task-project-title")?.innerText.trim() ||
+        document.title;
+
+      // ✅ Numeric reward only
+      let reward = 0;
+      try {
+        const rewardText =
+          document.querySelector(".detail-bar-value")?.innerText || "";
+        reward = parseFloat(rewardText.replace(/[^0-9.]/g, "")) || 0;
+      } catch {}
+
+      // ✅ Worker ID (cleaned)
+      let workerId =
+        document.querySelector(".me-bar .text-uppercase span")?.innerText.trim() ||
+        "unknown";
+      workerId = workerId.replace(/^COPIED\\s+/i, "");
+
+      // ⏳ Time Remaining
       let timeRemainingSeconds = null;
       const timer = document.querySelector("[data-react-class*='CompletionTimer']");
       if (timer?.getAttribute("data-react-props")) {
@@ -54,37 +73,53 @@
         reward,
         workerId,
         acceptedAt: new Date().toISOString(),
-        timeRemainingSeconds
+        timeRemainingSeconds,
+        status: "accepted" // default when accepted
       };
     }
 
     async function saveHit(hit) {
+      // Save to active queue
       await setDoc(doc(db, "hits", hit.assignmentId), hit);
-      console.log("✅ HIT saved to Firestore:", hit);
+
+      // Save to history (append/update)
+      await setDoc(doc(db, "history", hit.assignmentId), hit);
+
+      console.log("✅ HIT saved:", hit.assignmentId);
 
       // Auto-expire
       if (hit.timeRemainingSeconds) {
         setTimeout(async () => {
           await deleteDoc(doc(db, "hits", hit.assignmentId));
+          await setDoc(doc(db, "history", hit.assignmentId), {
+            ...hit,
+            status: "expired",
+            removedAt: new Date().toISOString()
+          });
           console.log("🗑️ HIT expired:", hit.assignmentId);
         }, hit.timeRemainingSeconds * 1000);
       }
     }
 
-    async function removeHit(assignmentId, reason = "Removed") {
+    async function removeHit(assignmentId, status = "removed") {
       await deleteDoc(doc(db, "hits", assignmentId));
-      console.log(\`🗑️ \${reason} HIT:\`, assignmentId);
+      await setDoc(doc(db, "history", assignmentId), {
+        assignmentId,
+        status,
+        removedAt: new Date().toISOString()
+      }, { merge: true });
+      console.log(\`🗑️ HIT \${status}:\`, assignmentId);
     }
 
     const hit = scrapeHitInfo();
     if (hit) {
       await saveHit(hit);
 
-      // Watch forms (submit or return)
-      const forms = document.querySelectorAll("form[action*='/submit'], form[action*='/return'], form[action*='/tasks/']");
+      // Watch for submit/return
+      const forms = document.querySelectorAll("form[action*='/submit'], form[action*='/return']");
       forms.forEach(f => {
         f.addEventListener("submit", () => {
-          removeHit(hit.assignmentId, "Submitted/Returned");
+          removeHit(hit.assignmentId, "submitted/returned");
         });
       });
     }
