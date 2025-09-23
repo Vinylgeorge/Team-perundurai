@@ -141,22 +141,25 @@
           <tbody>
       `;
 
-      for (const hit of hits) {
-        const formattedReward = hit.reward ? `$${Number(hit.reward).toFixed(2)}` : "-";
-        html += `
-          <tr>
-            <td>${hit.requester || "-"}</td>
-            <td>${hit.title || "-"}</td>
-            <td class="reward">${formattedReward}</td>
-            <td><span class="worker-id">${hit.workerId || "-"}</span></td>
-            <td>${hit.acceptedAt ? new Date(hit.acceptedAt).toLocaleString() : "-"}</td>
-          </tr>
-        `;
-      }
+     for (const hit of hits) {
+  // ✅ Safely parse reward
+  let rewardVal = 0;
+  if (hit.reward !== undefined && hit.reward !== null && !isNaN(Number(hit.reward))) {
+    rewardVal = Number(hit.reward);
+  }
 
-      html += "</tbody></table>";
-      tableContainer.innerHTML = html;
-    }
+  const formattedReward = `$${rewardVal.toFixed(2)}`;
+
+  html += `
+    <tr>
+      <td>${hit.requester || "-"}</td>
+      <td>${hit.title || "-"}</td>
+      <td class="reward">${formattedReward}</td>
+      <td><span class="worker-id">${hit.workerId || "-"}</span></td>
+      <td>${hit.acceptedAt ? new Date(hit.acceptedAt).toLocaleString() : "-"}</td>
+    </tr>
+  `;
+}
 
     // 🔴 Realtime Firestore Subscription
     onSnapshot(hitsRef, (snapshot) => {
