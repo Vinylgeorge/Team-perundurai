@@ -56,8 +56,53 @@
     const notificationSound = new Audio("https://www.allbyjohn.com/sounds/mturkscanner/lessthan15Short.mp3");
     notificationSound.preload = "auto";
 
+    // 🔓 Unlock audio on first user interaction
+    function unlockAudio() {
+      notificationSound.play().then(() => {
+        notificationSound.pause();
+        notificationSound.currentTime = 0;
+        console.log("🔓 Audio unlocked");
+      }).catch(() => {});
+      document.removeEventListener("click", unlockAudio);
+      document.removeEventListener("keydown", unlockAudio);
+    }
+    document.addEventListener("click", unlockAudio);
+    document.addEventListener("keydown", unlockAudio);
+
     // Keep track of known assignmentIds
     let knownIds = new Set();
+
+    // --- Load Google Sheet into lookup map ---
+    const SHEET_CSV_URL =
+      "https://docs.google.com/spreadsheets/d/1oyR6URA8qOmg6Zo90Df4w1h5lckOmjVC_9JrE-AXouM/export?format=csv&gid=0";
+
+    let workerMap = {}; // { workerId → user }
+
+    async function loadWorkerMap() {
+      try {
+        const res = await fetch(SHEET_CSV_URL);
+        const text = await res.text();
+        const rows = text.split("\n").map(r => r.split(",").map(c => c.trim()));
+        // Expecting header: WorkerID, User
+        const header = rows[0].map(h => h.toLowerCase());
+        const idIndex = header.indexOf("workerid");
+        const userIndex = header.indexOf("user");
+        if (idIndex === -1 || userIndex === -1) {
+          console.warn("Sheet missing headers WorkerID/User");
+          return;
+        }
+        for (let i = 1; i < rows.length; i++) {
+          const row = rows[i];
+          if (row[idIndex]) {
+            workerMap[row[idIndex]] = row[userIndex] || "";
+          }
+        }
+        console.log("✅ Worker map loaded:", workerMap);
+      } catch (err) {
+        console.error("Failed to load worker map:", err);
+      }
+    }
+    await loadWorkerMap();
 
     function buildTable(hits) {
       if (!hits.length) {
@@ -69,10 +114,11 @@
         <table>
           <thead>
             <tr>
+              <th>User</th>
+              <th>Worker ID</th>
               <th>Requester</th>
               <th>Title</th>
               <th>Reward</th>
-              <th>Worker ID</th>
               <th>Accepted At</th>
             </tr>
           </thead>
@@ -80,6 +126,9 @@
       `;
 
       for (const hit of hits) {
+        // 🔗 Lookup user by workerId
+        const user = workerMap[hit.workerId] || "-";
+
         let formattedReward = "-";
         if (hit.reward) {
           if (typeof hit.reward === "string" && hit.reward.trim().startsWith("$")) {
@@ -92,10 +141,11 @@
 
         html += `
           <tr>
+            <td>${user}</td>
+            <td>${hit.workerId}</td>
             <td>${hit.requester}</td>
             <td>${hit.title}</td>
             <td>${formattedReward}</td>
-            <td>${hit.workerId}</td>
             <td>${new Date(hit.acceptedAt).toLocaleString()}</td>
           </tr>
         `;
@@ -121,15 +171,13 @@
       // Detect new HITs
       const added = [...newIds].filter(id => !knownIds.has(id));
       if (added.length > 0) {
-        try {
-          notificationSound.currentTime = 0;
-          notificationSound.play();
-        } catch (e) {
-          console.warn("Sound play failed (probably due to browser autoplay policy):", e);
-        }
+        notificationSound.currentTime = 0;
+        notificationSound.play().catch(() => {
+          console.warn("Sound blocked until user interacts.");
+        });
       }
 
-      knownIds = newIds; // update known IDs
+      knownIds = newIds;
       buildTable(hits);
       console.log("🔄 Firestore update:", hits.length);
     });
