@@ -1,106 +1,42 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <title>📊 MTurk HIT Monitor</title>
+  <meta charset="utf-8" />
+  <title>MTurk Monitor — Firestore</title>
   <style>
     body {
-      font-family: "Segoe UI", Roboto, Arial, sans-serif;
-      margin: 0;
-      padding: 0;
-      background: #f3f4f6;
-      color: #111827;
-    }
-    header {
-      background: linear-gradient(135deg, #2563eb, #1d4ed8);
-      color: white;
-      padding: 16px;
-      text-align: center;
-    }
-    h1 {
-      margin: 0;
-      font-size: 1.8em;
-    }
-    .container {
-      max-width: 1000px;
-      margin: 20px auto;
-      background: white;
-      border-radius: 12px;
-      box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+      font-family: Inter, Roboto, Arial, sans-serif;
+      background: #f7f8fa;
       padding: 20px;
+      color: #111827;
     }
     table {
       width: 100%;
       border-collapse: collapse;
-      margin-top: 16px;
+      margin-top: 20px;
     }
     th, td {
-      padding: 10px;
-      border-bottom: 1px solid #e5e7eb;
-      text-align: left;
+      border: 1px solid #ddd;
+      padding: 8px;
     }
     th {
-      background: #f9fafb;
-      font-weight: 600;
+      background: #f1f3f5;
+      text-align: left;
     }
     tr:hover {
-      background: #f3f4f6;
+      background: #f9fcff;
     }
-    .totals {
-      margin-top: 20px;
-      background: #f9fafb;
-      padding: 12px;
-      border-radius: 8px;
-    }
-    .totals h2 {
-      margin: 0 0 10px;
-      font-size: 1.2em;
-    }
-    .badge {
-      display: inline-block;
-      padding: 4px 8px;
-      border-radius: 6px;
-      font-size: 0.75em;
-      font-weight: 600;
-      color: white;
-    }
-    .accepted { background: #2563eb; }
-    .returned { background: #f97316; }
-    .submitted { background: #16a34a; }
   </style>
-
-  <!-- Firebase -->
-  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
 </head>
 <body>
-  <header>
-    <h1>📊 MTurk HIT Monitor</h1>
-    <p>Live HITs + Daily Totals</p>
-  </header>
+  <h1>MTurk Monitor (Realtime)</h1>
+  <div id="tableContainer">Loading...</div>
 
-  <div class="container">
-    <table id="hitsTable">
-      <thead>
-        <tr>
-          <th>Title</th>
-          <th>Requester</th>
-          <th>Reward</th>
-          <th>Status</th>
-          <th>Accepted At</th>
-        </tr>
-      </thead>
-      <tbody></tbody>
-    </table>
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+    import { getFirestore, collection, onSnapshot } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
-    <div class="totals">
-      <h2>Daily Totals</h2>
-      <ul id="dailyTotals"></ul>
-    </div>
-  </div>
-
-  <script>
-    // 🔧 Your Firebase Config
+    // 🔑 Firebase Config
     const firebaseConfig = {
       apiKey: "AIzaSyD_FH-65A526z8g9iGhSYKulS4yiv5e6Ys",
       authDomain: "mturk-monitor.firebaseapp.com",
@@ -110,59 +46,56 @@
       appId: "1:285174080989:web:e1f607e6a5f80463278234"
     };
 
-    firebase.initializeApp(firebaseConfig);
-    const db = firebase.firestore();
+    const app = initializeApp(firebaseConfig);
+    const db = getFirestore(app);
 
-    const hitsTableBody = document.querySelector("#hitsTable tbody");
-    const dailyTotalsEl = document.getElementById("dailyTotals");
+    const hitsRef = collection(db, "hits");
+    const tableContainer = document.getElementById("tableContainer");
 
-    let seen = new Set();
+    function buildTable(hits) {
+      if (!hits.length) {
+        tableContainer.innerHTML = "<p>No HITs in queue</p>";
+        return;
+      }
 
-    function playHitSound() {
-      const audio = new Audio("https://www.allbyjohn.com/sounds/mturkscanner/lessthan15Short.mp3");
-      audio.play().catch(() => {});
-    }
+      let html = `
+        <table>
+          <thead>
+            <tr>
+              <th>Requester</th>
+              <th>Title</th>
+              <th>Reward</th>
+              <th>Worker ID</th>
+              <th>Accepted At</th>
+            </tr>
+          </thead>
+          <tbody>
+      `;
 
-    function renderHits(snapshot) {
-      hitsTableBody.innerHTML = "";
-      const dailyTotals = {};
-
-      snapshot.forEach(doc => {
-        const hit = doc.data();
-
-        // 🚨 Play sound for *new* hits only
-        if (!seen.has(hit.assignmentId)) {
-          seen.add(hit.assignmentId);
-          playHitSound();
-        }
-
-        const tr = document.createElement("tr");
-        tr.innerHTML = `
-          <td>${hit.title || ""}</td>
-          <td>${hit.requester || ""}</td>
-          <td>$${hit.reward?.toFixed(2) || "0.00"}</td>
-          <td><span class="badge ${hit.status}">${hit.status}</span></td>
-          <td>${new Date(hit.acceptedAt).toLocaleString()}</td>
+      for (const hit of hits) {
+        const formattedReward = hit.reward ? `$${Number(hit.reward).toFixed(2)}` : "-";
+        html += `
+          <tr>
+            <td>${hit.requester}</td>
+            <td>${hit.title}</td>
+            <td>${formattedReward}</td>
+            <td>${hit.workerId}</td>
+            <td>${new Date(hit.acceptedAt).toLocaleString()}</td>
+          </tr>
         `;
-        hitsTableBody.appendChild(tr);
+      }
 
-        // group totals per day
-        const day = hit.acceptedAt ? hit.acceptedAt.split("T")[0] : "Unknown";
-        if (!dailyTotals[day]) dailyTotals[day] = 0;
-        dailyTotals[day] += hit.reward || 0;
-      });
-
-      // render daily totals
-      dailyTotalsEl.innerHTML = "";
-      Object.keys(dailyTotals).sort().forEach(day => {
-        const li = document.createElement("li");
-        li.textContent = `${day}: $${dailyTotals[day].toFixed(2)}`;
-        dailyTotalsEl.appendChild(li);
-      });
+      html += "</tbody></table>";
+      tableContainer.innerHTML = html;
     }
 
-    // 🔴 Live listener
-    db.collection("hits").onSnapshot(renderHits);
+    // 🔴 Realtime Firestore Subscription
+    onSnapshot(hitsRef, (snapshot) => {
+      const hits = [];
+      snapshot.forEach(doc => hits.push(doc.data()));
+      buildTable(hits);
+      console.log("🔄 Firestore update:", hits.length);
+    });
   </script>
 </body>
 </html>
