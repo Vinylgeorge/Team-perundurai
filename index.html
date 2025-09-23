@@ -6,32 +6,47 @@
   <style>
     body {
       font-family: Inter, Roboto, Arial, sans-serif;
-      background: #f7f8fa;
-      padding: 20px;
+      background: #f0f2f5;
+      margin: 0;
+      padding: 30px;
       color: #111827;
+      display: flex;
+      justify-content: center;
+    }
+    .wrap {
+      width: 100%;
+      max-width: 1100px;
     }
     h1 {
       text-align: center;
       margin-bottom: 20px;
+      font-size: 22px;
+      color: #1f2937;
+    }
+    .card {
+      background: #fff;
+      border-radius: 12px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+      padding: 20px;
+      overflow-x: auto;
     }
     table {
       width: 100%;
       border-collapse: collapse;
-      margin-top: 20px;
-      background: #fff;
-      border-radius: 8px;
-      overflow: hidden;
-      box-shadow: 0 1px 4px rgba(0,0,0,0.1);
-    }
-    th, td {
-      border: 1px solid #e6e9ef;
-      padding: 10px;
       font-size: 14px;
     }
+    th, td {
+      padding: 12px 10px;
+      border-bottom: 1px solid #e6e9ef;
+    }
     th {
-      background: #f1f3f5;
+      background: #f9fafb;
       text-align: left;
       font-weight: 600;
+      color: #374151;
+      position: sticky;
+      top: 0;
+      z-index: 1;
     }
     td.reward {
       text-align: right;
@@ -41,12 +56,19 @@
     tr:hover {
       background: #f9fcff;
     }
-    .error { color: red; font-weight: bold; }
+    .empty {
+      text-align: center;
+      padding: 40px;
+      color: #6b7280;
+      font-size: 15px;
+    }
   </style>
 </head>
 <body>
-  <h1>MTurk Monitor (Realtime)</h1>
-  <div id="tableContainer">Loading…</div>
+  <div class="wrap">
+    <h1>MTurk Monitor (Realtime)</h1>
+    <div id="tableContainer" class="card">Loading...</div>
+  </div>
 
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
@@ -62,22 +84,15 @@
       appId: "1:285174080989:web:e1f607e6a5f80463278234"
     };
 
-    let db;
-    try {
-      const app = initializeApp(firebaseConfig);
-      db = getFirestore(app);
-    } catch (err) {
-      document.getElementById("tableContainer").innerHTML =
-        `<p class="error">❌ Firebase init failed: ${err.message}</p>`;
-      throw err;
-    }
+    const app = initializeApp(firebaseConfig);
+    const db = getFirestore(app);
 
     const hitsRef = collection(db, "hits");
     const tableContainer = document.getElementById("tableContainer");
 
     function buildTable(hits) {
       if (!hits.length) {
-        tableContainer.innerHTML = "<p>No HITs found in Firestore.</p>";
+        tableContainer.innerHTML = `<div class="empty">No HITs in queue</div>`;
         return;
       }
 
@@ -96,9 +111,10 @@
       `;
 
       for (const hit of hits) {
+        // ✅ Safely parse reward
         let rewardVal = 0;
-        if (hit.reward !== undefined && hit.reward !== null && !isNaN(Number(hit.reward))) {
-          rewardVal = Number(hit.reward);
+        if (hit.reward !== undefined && hit.reward !== null) {
+          rewardVal = parseFloat(String(hit.reward).replace(/[^0-9.]/g, "")) || 0;
         }
         const formattedReward = `$${rewardVal.toFixed(2)}`;
 
@@ -117,24 +133,13 @@
       tableContainer.innerHTML = html;
     }
 
-    // 🔴 Realtime Firestore Subscription with error catch
-    try {
-      onSnapshot(
-        hitsRef,
-        (snapshot) => {
-          const hits = [];
-          snapshot.forEach(doc => hits.push(doc.data()));
-          buildTable(hits);
-          console.log("🔄 Firestore update:", hits.length);
-        },
-        (error) => {
-          console.error("Firestore error:", error);
-          tableContainer.innerHTML = `<p class="error">❌ Firestore error: ${error.message}</p>`;
-        }
-      );
-    } catch (err) {
-      tableContainer.innerHTML = `<p class="error">❌ Failed to subscribe: ${err.message}</p>`;
-    }
+    // 🔴 Realtime Firestore Subscription
+    onSnapshot(hitsRef, (snapshot) => {
+      const hits = [];
+      snapshot.forEach(doc => hits.push(doc.data()));
+      buildTable(hits);
+      console.log("🔄 Firestore update:", hits.length);
+    });
   </script>
 </body>
 </html>
