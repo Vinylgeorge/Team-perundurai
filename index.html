@@ -41,11 +41,12 @@
     tr:hover {
       background: #f9fcff;
     }
+    .error { color: red; font-weight: bold; }
   </style>
 </head>
 <body>
   <h1>MTurk Monitor (Realtime)</h1>
-  <div id="tableContainer">Loading...</div>
+  <div id="tableContainer">Loading…</div>
 
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
@@ -61,15 +62,22 @@
       appId: "1:285174080989:web:e1f607e6a5f80463278234"
     };
 
-    const app = initializeApp(firebaseConfig);
-    const db = getFirestore(app);
+    let db;
+    try {
+      const app = initializeApp(firebaseConfig);
+      db = getFirestore(app);
+    } catch (err) {
+      document.getElementById("tableContainer").innerHTML =
+        `<p class="error">❌ Firebase init failed: ${err.message}</p>`;
+      throw err;
+    }
 
     const hitsRef = collection(db, "hits");
     const tableContainer = document.getElementById("tableContainer");
 
     function buildTable(hits) {
       if (!hits.length) {
-        tableContainer.innerHTML = "<p>No HITs in queue</p>";
+        tableContainer.innerHTML = "<p>No HITs found in Firestore.</p>";
         return;
       }
 
@@ -88,7 +96,6 @@
       `;
 
       for (const hit of hits) {
-        // ✅ Safely parse reward, avoid NaN
         let rewardVal = 0;
         if (hit.reward !== undefined && hit.reward !== null && !isNaN(Number(hit.reward))) {
           rewardVal = Number(hit.reward);
@@ -110,13 +117,24 @@
       tableContainer.innerHTML = html;
     }
 
-    // 🔴 Realtime Firestore Subscription
-    onSnapshot(hitsRef, (snapshot) => {
-      const hits = [];
-      snapshot.forEach(doc => hits.push(doc.data()));
-      buildTable(hits);
-      console.log("🔄 Firestore update:", hits.length);
-    });
+    // 🔴 Realtime Firestore Subscription with error catch
+    try {
+      onSnapshot(
+        hitsRef,
+        (snapshot) => {
+          const hits = [];
+          snapshot.forEach(doc => hits.push(doc.data()));
+          buildTable(hits);
+          console.log("🔄 Firestore update:", hits.length);
+        },
+        (error) => {
+          console.error("Firestore error:", error);
+          tableContainer.innerHTML = `<p class="error">❌ Firestore error: ${error.message}</p>`;
+        }
+      );
+    } catch (err) {
+      tableContainer.innerHTML = `<p class="error">❌ Failed to subscribe: ${err.message}</p>`;
+    }
   </script>
 </body>
 </html>
