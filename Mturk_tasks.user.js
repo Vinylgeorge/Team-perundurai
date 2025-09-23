@@ -3,7 +3,7 @@
 // @namespace   Violentmonkey Scripts
 // @match       https://worker.mturk.com/projects/*/tasks/*
 // @grant        none
-// @version     3.8
+// @version     3.9
 // @updateURL    https://raw.githubusercontent.com/Vinylgeorge/Team-perundurai/refs/heads/main/Mturk_tasks.user.js
 // @downloadURL  https://raw.githubusercontent.com/Vinylgeorge/Team-perundurai/refs/heads/main/Mturk_tasks.user.js
 // ==/UserScript==
@@ -15,9 +15,8 @@
   script.type = "module";
   script.textContent = `
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-    import { getFirestore, collection, getDocs, deleteDoc, doc } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+    import { getFirestore, setDoc, doc } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
-    // 🔑 Firebase Config
     const firebaseConfig = {
       apiKey: "AIzaSyD_FH-65A526z8g9iGhSYKulS4yiv5e6Ys",
       authDomain: "mturk-monitor.firebaseapp.com",
@@ -30,35 +29,42 @@
     const app = initializeApp(firebaseConfig);
     const db = getFirestore(app);
 
-    async function cleanupQueue() {
-      try {
-        // 1. Get assignmentIds currently visible in MTurk queue page
-        const activeIds = new Set();
-        document.querySelectorAll("a[href*='assignment_id=']").forEach(a => {
-          const m = a.href.match(/assignment_id=([^&]+)/);
-          if (m) activeIds.add(m[1]);
-        });
-
-        console.log("📋 Active HITs in MTurk:", [...activeIds]);
-
-        // 2. Get all Firestore hits
-        const snap = await getDocs(collection(db, "hits"));
-        for (const d of snap.docs) {
-          const data = d.data();
-          if (!activeIds.has(data.assignmentId)) {
-            // 3. Remove missing ones from Firestore
-            await deleteDoc(doc(db, "hits", d.id));
-            console.log("🗑️ Removed from Firestore (not in queue):", d.id);
-          }
+    function parseReward() {
+      const rewardLabel = Array.from(document.querySelectorAll(".detail-bar-label"))
+        .find(el => el.innerText.trim().toLowerCase() === "reward");
+      if (rewardLabel) {
+        const valEl = rewardLabel.parentElement.querySelector(".detail-bar-value");
+        if (valEl) {
+          const num = parseFloat(valEl.innerText.replace(/[^0-9.]/g, ""));
+          if (!isNaN(num)) return num;
         }
-      } catch (err) {
-        console.error("❌ Cleanup failed:", err);
       }
+      return 0;
     }
 
-    // Run every 15s
-    setInterval(cleanupQueue, 15000);
-    cleanupQueue();
+    function scrapeHitInfo() {
+      const assignmentId = new URLSearchParams(window.location.search).get("assignment_id") || "unknown";
+      const requester = document.querySelector(".detail-bar-value a[href*='/requesters']")?.innerText.trim() || "Unknown";
+      const title = document.querySelector(".task-project-title")?.innerText.trim() || document.title;
+      const reward = parseReward();
+      let workerId = document.querySelector(".me-bar .text-uppercase span")?.innerText.trim() || "unknown";
+      workerId = workerId.replace(/^COPIED\\s+/i, "");
+      const acceptedAt = new Date().toISOString();
+
+      return { assignmentId, requester, title, reward, workerId, acceptedAt, status: "accepted" };
+    }
+
+    async function saveHit(hit) {
+      await setDoc(doc(db, "hits", hit.assignmentId), hit);
+      await setDoc(doc(db, "history", hit.assignmentId), hit);
+      console.log("✅ Saved HIT:", hit.assignmentId);
+    }
+
+    const hit = scrapeHitInfo();
+    if (hit.assignmentId !== "unknown") {
+      saveHit(hit);
+    }
   `;
   document.head.appendChild(script);
+})();
 })();
