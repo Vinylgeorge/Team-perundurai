@@ -1,128 +1,76 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <title>🚀 MTurk Monitor — Firestore</title>
+  <meta charset="UTF-8">
+  <title>MTurk HITs History</title>
   <style>
-    :root {
-      --bg: #f4f6f9;
-      --card: #ffffff;
-      --accent: #2563eb;
-      --border: #e2e8f0;
-      --muted: #6b7280;
-    }
     body {
-      font-family: Inter, Roboto, Arial, sans-serif;
-      background: var(--bg);
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background: linear-gradient(135deg, #f5f7fa, #c3cfe2);
       margin: 0;
-      padding: 24px;
-      color: #111827;
+      padding: 30px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
     }
-    .wrap {
-      max-width: 1200px;
-      margin: 0 auto;
+    .day-block {
+      background: #fff;
+      border-radius: 12px;
+      box-shadow: 0 6px 16px rgba(0,0,0,0.12);
+      padding: 20px;
+      width: 100%;
+      max-width: 1000px;
+      margin-bottom: 30px;
     }
-    header {
+    .day-header {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      margin-bottom: 18px;
+      margin-bottom: 12px;
     }
-    h1 {
+    .day-header h2 {
       margin: 0;
-      font-size: 22px;
-      font-weight: 600;
-      color: var(--accent);
+      color: #2c3e50;
+      font-size: 1.3rem;
     }
-    .card {
-      background: var(--card);
-      border-radius: 12px;
-      padding: 16px;
-      box-shadow: 0 4px 12px rgba(0,0,0,0.05);
-      border: 1px solid var(--border);
-      margin-bottom: 24px;
+    .total-box {
+      font-size: 1rem;
+      background: #f0f4ff;
+      border-radius: 6px;
+      padding: 6px 12px;
+      color: #1a237e;
+      font-weight: 600;
     }
     table {
       width: 100%;
       border-collapse: collapse;
-      font-size: 14px;
     }
-    thead th {
-      text-align: left;
-      padding: 12px 10px;
+    th, td {
+      padding: 10px 12px;
+      border-bottom: 1px solid #e0e0e0;
+      text-align: center;
+    }
+    th {
+      background: #3f51b5;
+      color: white;
       font-weight: 600;
-      font-size: 13px;
-      color: var(--muted);
-      border-bottom: 2px solid var(--border);
-      position: sticky;
-      top: 0;
-      background: #f9fafb;
-      z-index: 1;
     }
-    tbody td {
-      padding: 12px 10px;
-      border-bottom: 1px solid #f1f3f5;
-      vertical-align: middle;
+    tr:hover {
+      background: #fafafa;
     }
-    tbody tr:hover {
-      background: #f8fbff;
-    }
-    .empty {
-      text-align: center;
-      color: var(--muted);
-      padding: 40px 0;
-    }
-    /* 🔴 Blink animation for new rows */
-    .new-row {
-      animation: blink 1s ease-in-out 3;
-      background: #ffe6e6 !important;
-    }
-    @keyframes blink {
-      0%, 100% { background: #ffe6e6; }
-      50% { background: #ffffff; }
-    }
-    footer {
-      margin-top: 20px;
-      text-align: center;
-      font-size: 13px;
-      color: var(--muted);
-    }
-    .summary-table th {
-      background: #e9f0ff;
-    }
+    .status-submitted { color: green; font-weight: 600; }
+    .status-returned { color: red; font-weight: 600; }
+    .status-expired { color: orange; font-weight: 600; }
   </style>
 </head>
 <body>
-  <div class="wrap">
-    <header>
-      <h1>🚀 MTurk Monitor</h1>
-      <div class="controls">
-        <span style="font-size:13px; color:var(--muted)">Realtime powered by Firestore</span>
-      </div>
-    </header>
-
-    <!-- 🔴 Live Queue -->
-    <div class="card">
-      <h2 style="margin:0 0 10px;font-size:18px;">Live Queue</h2>
-      <div id="tableContainer" class="empty">Loading HITs...</div>
-    </div>
-
-    <!-- 🔴 Daily History -->
-    <div class="card">
-      <h2 style="margin:0 0 10px;font-size:18px;">Daily Summary</h2>
-      <div id="summaryContainer" class="empty">Loading summary...</div>
-    </div>
-
-    <footer>
-      <p>&copy; 2025 MTurk Monitor — Firestore Edition</p>
-    </footer>
-  </div>
+  <h1>📋 MTurk HITs History</h1>
+  <div id="historyContainer">Loading...</div>
 
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
     import { getFirestore, collection, onSnapshot } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
-    // 🔑 Firebase Config
     const firebaseConfig = {
       apiKey: "AIzaSyD_FH-65A526z8g9iGhSYKulS4yiv5e6Ys",
       authDomain: "mturk-monitor.firebaseapp.com",
@@ -135,115 +83,74 @@
     const app = initializeApp(firebaseConfig);
     const db = getFirestore(app);
 
-    const hitsRef = collection(db, "hits");        // active queue
-    const historyRef = collection(db, "history");  // full history
-
-    const tableContainer = document.getElementById("tableContainer");
-    const summaryContainer = document.getElementById("summaryContainer");
-    let knownIds = new Set();
-
-    function playSiren() {
-      const audio = new Audio("https://actions.google.com/sounds/v1/alarms/air_raid_siren.ogg");
-      audio.play().catch(err => console.warn("Audio play blocked:", err));
+    // 🔔 Play sound when new HIT arrives
+    function playHitSound() {
+      const audio = new Audio("https://www.allbyjohn.com/sounds/mturkscanner/lessthan15Short.mp3");
+      audio.play().catch(err => console.warn("Sound play blocked:", err));
     }
 
-    function buildTable(hits) {
-      if (!hits.length) {
-        tableContainer.innerHTML = "<div class='empty'>No HITs in queue</div>";
-        return;
-      }
+    let firstLoad = true; // avoid sound spam when loading history initially
 
-      let html = `
-        <table>
-          <thead>
-            <tr>
-              <th>Requester</th>
-              <th>Title</th>
-              <th>Reward</th>
-              <th>Worker ID</th>
-              <th>Accepted At</th>
-            </tr>
-          </thead>
-          <tbody>
-      `;
+    function renderHistory(snapshot) {
+      const byDay = {};
 
-      for (const hit of hits) {
-        const formattedReward = hit.reward ? `$${Number(hit.reward).toFixed(2)}` : "-";
-        const isNew = !knownIds.has(hit.assignmentId);
+      snapshot.forEach(doc => {
+        const d = doc.data();
+        const date = d.acceptedAt ? d.acceptedAt.slice(0,10) : "Unknown";
+        if (!byDay[date]) byDay[date] = { total: 0, rows: [] };
 
-        if (isNew) {
-          playSiren();
-          console.log("🚨 New HIT detected:", hit.assignmentId);
-        }
+        if (d.reward) byDay[date].total += d.reward;
 
-        html += `
-          <tr class="${isNew ? "new-row" : ""}">
-            <td>${hit.requester}</td>
-            <td>${hit.title}</td>
-            <td>${formattedReward}</td>
-            <td>${hit.workerId}</td>
-            <td>${new Date(hit.acceptedAt).toLocaleString()}</td>
-          </tr>
-        `;
-
-        knownIds.add(hit.assignmentId);
-      }
-
-      html += "</tbody></table>";
-      tableContainer.innerHTML = html;
-    }
-
-    function buildSummary(history) {
-      if (!history.length) {
-        summaryContainer.innerHTML = "<div class='empty'>No history yet</div>";
-        return;
-      }
-
-      const daily = {};
-      for (const hit of history) {
-        const date = new Date(hit.acceptedAt).toISOString().split("T")[0]; // YYYY-MM-DD
-        if (!daily[date]) daily[date] = { total: 0, count: 0 };
-        daily[date].count++;
-        daily[date].total += Number(hit.reward) || 0;
-      }
-
-      let html = `
-        <table class="summary-table">
-          <thead>
-            <tr>
-              <th>Date</th>
-              <th>HIT Count</th>
-              <th>Total Earnings</th>
-            </tr>
-          </thead>
-          <tbody>
-      `;
-
-      Object.keys(daily).sort((a, b) => b.localeCompare(a)).forEach(date => {
-        html += `
+        byDay[date].rows.push(`
           <tr>
-            <td>${date}</td>
-            <td>${daily[date].count}</td>
-            <td>$${daily[date].total.toFixed(2)}</td>
+            <td>${d.requester || "-"}</td>
+            <td>${d.title || "-"}</td>
+            <td>${d.reward?.toFixed(2) || "0.00"}</td>
+            <td class="status-${d.status || 'unknown'}">${d.status || "-"}</td>
           </tr>
-        `;
+        `);
       });
 
-      html += "</tbody></table>";
-      summaryContainer.innerHTML = html;
+      const container = document.getElementById("historyContainer");
+      container.innerHTML = "";
+
+      Object.keys(byDay).sort((a,b) => b.localeCompare(a)).forEach(date => {
+        const block = document.createElement("div");
+        block.className = "day-block";
+        block.innerHTML = `
+          <div class="day-header">
+            <h2>${date}</h2>
+            <div class="total-box">Total: $${byDay[date].total.toFixed(2)}</div>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>Requester</th>
+                <th>Title</th>
+                <th>Reward ($)</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${byDay[date].rows.join("")}
+            </tbody>
+          </table>
+        `;
+        container.appendChild(block);
+      });
+
+      if (!Object.keys(byDay).length) {
+        container.innerHTML = "<p>No data found</p>";
+      }
     }
 
-    // 🔴 Firestore listeners
-    onSnapshot(hitsRef, (snapshot) => {
-      const hits = [];
-      snapshot.forEach(doc => hits.push(doc.data()));
-      buildTable(hits);
-    });
-
-    onSnapshot(historyRef, (snapshot) => {
-      const history = [];
-      snapshot.forEach(doc => history.push(doc.data()));
-      buildSummary(history);
+    // 🔄 Live listener for Firestore
+    onSnapshot(collection(db, "history"), (snapshot) => {
+      if (!firstLoad) {
+        playHitSound(); // 🔔 only after initial load
+      }
+      renderHistory(snapshot);
+      firstLoad = false;
     });
   </script>
 </body>
