@@ -6,69 +6,31 @@
   <style>
     body {
       font-family: Inter, Roboto, Arial, sans-serif;
-      background: #f0f2f5;
-      margin: 0;
-      padding: 30px;
-      color: #111827;
-      display: flex;
-      justify-content: center;
-    }
-    .wrap {
-      width: 100%;
-      max-width: 1100px;
-    }
-    h1 {
-      text-align: center;
-      margin-bottom: 20px;
-      font-size: 22px;
-      color: #1f2937;
-    }
-    .card {
-      background: #fff;
-      border-radius: 12px;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+      background: #f7f8fa;
       padding: 20px;
-      overflow-x: auto;
+      color: #111827;
     }
     table {
       width: 100%;
       border-collapse: collapse;
-      font-size: 14px;
+      margin-top: 20px;
     }
     th, td {
-      padding: 12px 10px;
-      border-bottom: 1px solid #e6e9ef;
+      border: 1px solid #ddd;
+      padding: 8px;
     }
     th {
-      background: #f9fafb;
+      background: #f1f3f5;
       text-align: left;
-      font-weight: 600;
-      color: #374151;
-      position: sticky;
-      top: 0;
-      z-index: 1;
-    }
-    td.reward {
-      text-align: right;
-      font-weight: 600;
-      color: #047857;
     }
     tr:hover {
       background: #f9fcff;
     }
-    .empty {
-      text-align: center;
-      padding: 40px;
-      color: #6b7280;
-      font-size: 15px;
-    }
   </style>
 </head>
 <body>
-  <div class="wrap">
-    <h1>MTurk Monitor (Realtime)</h1>
-    <div id="tableContainer" class="card">Loading...</div>
-  </div>
+  <h1>MTurk Monitor (Realtime)</h1>
+  <div id="tableContainer">Loading...</div>
 
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
@@ -90,9 +52,16 @@
     const hitsRef = collection(db, "hits");
     const tableContainer = document.getElementById("tableContainer");
 
+    // 🎵 Notification sound
+    const notificationSound = new Audio("https://www.allbyjohn.com/sounds/mturkscanner/lessthan15Short.mp3");
+    notificationSound.preload = "auto";
+
+    // Keep track of known assignmentIds
+    let knownIds = new Set();
+
     function buildTable(hits) {
       if (!hits.length) {
-        tableContainer.innerHTML = `<div class="empty">No HITs in queue</div>`;
+        tableContainer.innerHTML = "<p>No HITs in queue</p>";
         return;
       }
 
@@ -111,20 +80,23 @@
       `;
 
       for (const hit of hits) {
-        // ✅ Safely parse reward
-        let rewardVal = 0;
-        if (hit.reward !== undefined && hit.reward !== null) {
-          rewardVal = parseFloat(String(hit.reward).replace(/[^0-9.]/g, "")) || 0;
+        let formattedReward = "-";
+        if (hit.reward) {
+          if (typeof hit.reward === "string" && hit.reward.trim().startsWith("$")) {
+            formattedReward = hit.reward.trim();
+          } else {
+            const num = Number(hit.reward);
+            formattedReward = isNaN(num) ? "-" : `$${num.toFixed(2)}`;
+          }
         }
-        const formattedReward = `$${rewardVal.toFixed(2)}`;
 
         html += `
           <tr>
-            <td>${hit.requester || "-"}</td>
-            <td>${hit.title || "-"}</td>
-            <td class="reward">${formattedReward}</td>
-            <td>${hit.workerId || "-"}</td>
-            <td>${hit.acceptedAt ? new Date(hit.acceptedAt).toLocaleString() : "-"}</td>
+            <td>${hit.requester}</td>
+            <td>${hit.title}</td>
+            <td>${formattedReward}</td>
+            <td>${hit.workerId}</td>
+            <td>${new Date(hit.acceptedAt).toLocaleString()}</td>
           </tr>
         `;
       }
@@ -136,7 +108,28 @@
     // 🔴 Realtime Firestore Subscription
     onSnapshot(hitsRef, (snapshot) => {
       const hits = [];
-      snapshot.forEach(doc => hits.push(doc.data()));
+      const newIds = new Set();
+
+      snapshot.forEach(doc => {
+        const data = doc.data();
+        hits.push(data);
+        if (data.assignmentId) {
+          newIds.add(data.assignmentId);
+        }
+      });
+
+      // Detect new HITs
+      const added = [...newIds].filter(id => !knownIds.has(id));
+      if (added.length > 0) {
+        try {
+          notificationSound.currentTime = 0;
+          notificationSound.play();
+        } catch (e) {
+          console.warn("Sound play failed (probably due to browser autoplay policy):", e);
+        }
+      }
+
+      knownIds = newIds; // update known IDs
       buildTable(hits);
       console.log("🔄 Firestore update:", hits.length);
     });
