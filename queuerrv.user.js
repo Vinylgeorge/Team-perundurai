@@ -4,7 +4,8 @@
 // @match       https://worker.mturk.com/tasks*
 // @grant       none
 // @version     1.0
-
+// @updateURL    https://raw.githubusercontent.com/Vinylgeorge/Team-perundurai/refs/heads/main/queuerrv.user.js
+// @downloadURL  https://raw.githubusercontent.com/Vinylgeorge/Team-perundurai/refs/heads/main/queuerrv.user.js
 // ==/UserScript==
 
 (function () {
