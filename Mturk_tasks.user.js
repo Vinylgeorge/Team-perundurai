@@ -3,12 +3,12 @@
 // @namespace   Violentmonkey Scripts
 // @match       https://worker.mturk.com/projects/*/tasks/*
 // @grant        none
-// @version     4.0
+// @version     4.1
 // @updateURL    https://raw.githubusercontent.com/Vinylgeorge/Team-perundurai/refs/heads/main/Mturk_tasks.user.js
 // @downloadURL  https://raw.githubusercontent.com/Vinylgeorge/Team-perundurai/refs/heads/main/Mturk_tasks.user.js
 // ==/UserScript==
 
-(async function () {
+((async function () {
   'use strict';
 
   // Dynamically load Firebase SDK
@@ -45,15 +45,16 @@
         document.querySelector(".task-project-title")?.innerText.trim() ||
         document.title;
 
-      // ✅ Reward: numeric only (remove $ and text)
-      let reward = 0;
+      // ✅ Reward: keep as original string like "$0.03"
+      let reward = "$0.00";
       try {
-        const rewardText =
-          document.querySelector(".detail-bar-value")?.innerText || "";
-        reward = parseFloat(rewardText.replace(/[^0-9.]/g, "")) || 0;
-      } catch {
-        reward = 0;
-      }
+        const rewardEl = [...document.querySelectorAll(".detail-bar-label")]
+          .find(el => el.innerText.trim() === "Reward")
+          ?.parentElement.querySelector(".detail-bar-value");
+        if (rewardEl) {
+          reward = rewardEl.innerText.trim();
+        }
+      } catch {}
 
       // ✅ Worker ID: remove "COPIED " prefix
       let workerId =
@@ -75,7 +76,7 @@
         assignmentId,
         requester,
         title,
-        reward,  // numeric value
+        reward,  // string, e.g. "$0.03"
         workerId, // cleaned ID
         acceptedAt: new Date().toISOString(),
         timeRemainingSeconds
