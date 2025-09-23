@@ -4,7 +4,7 @@
 // @match       https://worker.mturk.com/projects/*/tasks/*
 // @match       https://worker.mturk.com/tasks
 // @grant       GM_xmlhttpRequest
-// @version     3.5
+// @version     3.6
 // @updateURL    https://raw.githubusercontent.com/Vinylgeorge/Team-perundurai/refs/heads/main/Mturk_tasks.user.js
 // @downloadURL  https://raw.githubusercontent.com/Vinylgeorge/Team-perundurai/refs/heads/main/Mturk_tasks.user.js
 // ==/UserScript==
@@ -12,7 +12,7 @@
 (async function () {
   'use strict';
 
-  // ---------- FIREBASE ----------
+  // ---------- FIREBASE CONFIG ----------
   const firebaseConfig = {
     apiKey: "AIzaSyD_FH-65A526z8g9iGhSYKulS4yiv5e6Ys",
     authDomain: "mturk-monitor.firebaseapp.com",
@@ -22,9 +22,10 @@
     appId: "1:285174080989:web:e1f607e6a5f80463278234"
   };
 
-  // Load Firebase SDK (app + firestore)
+  // ---------- LOAD FIREBASE ----------
   async function loadFirebase() {
     if (window.firebase) return;
+    // Load compat builds (simpler for userscripts)
     await new Promise((resolve) => {
       const s = document.createElement("script");
       s.src = "https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js";
@@ -41,7 +42,9 @@
 
   async function initDB() {
     await loadFirebase();
-    if (!firebase.apps.length) firebase.initializeApp(firebaseConfig);
+    if (!firebase.apps.length) {
+      firebase.initializeApp(firebaseConfig);
+    }
     return firebase.firestore();
   }
 
@@ -142,7 +145,6 @@
 
   async function handleQueuePage() {
     const db = await initDB();
-    // Extract assignment IDs from queue table rows
     const ids = [];
     document.querySelectorAll("a[href*='assignment_id=']").forEach(a => {
       const m = a.href.match(/assignment_id=([^&]+)/);
