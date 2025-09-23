@@ -2,80 +2,105 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>MTurk HITs History</title>
+  <title>📊 MTurk HIT Monitor</title>
   <style>
     body {
-      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-      background: linear-gradient(135deg, #f5f7fa, #c3cfe2);
+      font-family: "Segoe UI", Roboto, Arial, sans-serif;
       margin: 0;
-      padding: 30px;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
+      padding: 0;
+      background: #f3f4f6;
+      color: #111827;
+    }
+    header {
+      background: linear-gradient(135deg, #2563eb, #1d4ed8);
+      color: white;
+      padding: 16px;
+      text-align: center;
     }
     h1 {
-      margin-bottom: 20px;
-      color: #2c3e50;
-    }
-    .day-block {
-      background: #fff;
-      border-radius: 12px;
-      box-shadow: 0 6px 16px rgba(0,0,0,0.12);
-      padding: 20px;
-      width: 100%;
-      max-width: 1000px;
-      margin-bottom: 30px;
-    }
-    .day-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 12px;
-    }
-    .day-header h2 {
       margin: 0;
-      color: #2c3e50;
-      font-size: 1.3rem;
+      font-size: 1.8em;
     }
-    .total-box {
-      font-size: 1rem;
-      background: #f0f4ff;
-      border-radius: 6px;
-      padding: 6px 12px;
-      color: #1a237e;
-      font-weight: 600;
+    .container {
+      max-width: 1000px;
+      margin: 20px auto;
+      background: white;
+      border-radius: 12px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+      padding: 20px;
     }
     table {
       width: 100%;
       border-collapse: collapse;
+      margin-top: 16px;
     }
     th, td {
-      padding: 10px 12px;
-      border-bottom: 1px solid #e0e0e0;
-      text-align: center;
+      padding: 10px;
+      border-bottom: 1px solid #e5e7eb;
+      text-align: left;
     }
     th {
-      background: #3f51b5;
-      color: white;
+      background: #f9fafb;
       font-weight: 600;
     }
     tr:hover {
-      background: #fafafa;
+      background: #f3f4f6;
     }
-    .status-submitted { color: green; font-weight: 600; }
-    .status-returned { color: red; font-weight: 600; }
-    .status-expired { color: orange; font-weight: 600; }
-    .status-removed_from_queue { color: gray; font-weight: 600; }
+    .totals {
+      margin-top: 20px;
+      background: #f9fafb;
+      padding: 12px;
+      border-radius: 8px;
+    }
+    .totals h2 {
+      margin: 0 0 10px;
+      font-size: 1.2em;
+    }
+    .badge {
+      display: inline-block;
+      padding: 4px 8px;
+      border-radius: 6px;
+      font-size: 0.75em;
+      font-weight: 600;
+      color: white;
+    }
+    .accepted { background: #2563eb; }
+    .returned { background: #f97316; }
+    .submitted { background: #16a34a; }
   </style>
+
+  <!-- Firebase -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
 </head>
 <body>
-  <h1>📋 MTurk HITs History</h1>
-  <div id="historyContainer">Loading...</div>
+  <header>
+    <h1>📊 MTurk HIT Monitor</h1>
+    <p>Live HITs + Daily Totals</p>
+  </header>
 
-  <script type="module">
-    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-    import { getFirestore, collection, onSnapshot } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+  <div class="container">
+    <table id="hitsTable">
+      <thead>
+        <tr>
+          <th>Title</th>
+          <th>Requester</th>
+          <th>Reward</th>
+          <th>Status</th>
+          <th>Accepted At</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
 
+    <div class="totals">
+      <h2>Daily Totals</h2>
+      <ul id="dailyTotals"></ul>
+    </div>
+  </div>
+
+  <script>
+    // 🔧 Your Firebase Config
     const firebaseConfig = {
       apiKey: "AIzaSyD_FH-65A526z8g9iGhSYKulS4yiv5e6Ys",
       authDomain: "mturk-monitor.firebaseapp.com",
@@ -85,66 +110,59 @@
       appId: "1:285174080989:web:e1f607e6a5f80463278234"
     };
 
-    const app = initializeApp(firebaseConfig);
-    const db = getFirestore(app);
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.firestore();
 
-    function renderHistory(snapshot) {
-      const byDay = {};
-      snapshot.forEach(doc => {
-        const d = doc.data();
-        const date = d.acceptedAt ? d.acceptedAt.slice(0,10) : "Unknown";
-        if (!byDay[date]) byDay[date] = { total: 0, rows: [] };
-        if (d.reward) byDay[date].total += d.reward;
+    const hitsTableBody = document.querySelector("#hitsTable tbody");
+    const dailyTotalsEl = document.getElementById("dailyTotals");
 
-        byDay[date].rows.push(`
-          <tr>
-            <td>${d.requester || "-"}</td>
-            <td>${d.title || "-"}</td>
-            <td>${d.reward?.toFixed(2) || "0.00"}</td>
-            <td class="status-${d.status || 'unknown'}">${d.status || "-"}</td>
-          </tr>
-        `);
-      });
+    let seen = new Set();
 
-      const container = document.getElementById("historyContainer");
-      container.innerHTML = "";
-
-      Object.keys(byDay).sort((a,b) => b.localeCompare(a)).forEach(date => {
-        const block = document.createElement("div");
-        block.className = "day-block";
-        block.innerHTML = `
-          <div class="day-header">
-            <h2>${date}</h2>
-            <div class="total-box">Total: $${byDay[date].total.toFixed(2)}</div>
-          </div>
-          <table>
-            <thead>
-              <tr>
-                <th>Requester</th>
-                <th>Title</th>
-                <th>Reward ($)</th>
-                <th>Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${byDay[date].rows.join("")}
-            </tbody>
-          </table>
-        `;
-        container.appendChild(block);
-      });
-
-      if (!Object.keys(byDay).length) {
-        container.innerHTML = "<p>No data found</p>";
-      }
+    function playHitSound() {
+      const audio = new Audio("https://www.allbyjohn.com/sounds/mturkscanner/lessthan15Short.mp3");
+      audio.play().catch(() => {});
     }
 
-    // 🔄 Live Firestore listener with debug logging
-    onSnapshot(collection(db, "history"), (snapshot) => {
-      console.log("🔥 Snapshot size:", snapshot.size);
-      snapshot.forEach(doc => console.log("📄 Doc:", doc.id, doc.data()));
-      renderHistory(snapshot);
-    });
+    function renderHits(snapshot) {
+      hitsTableBody.innerHTML = "";
+      const dailyTotals = {};
+
+      snapshot.forEach(doc => {
+        const hit = doc.data();
+
+        // 🚨 Play sound for *new* hits only
+        if (!seen.has(hit.assignmentId)) {
+          seen.add(hit.assignmentId);
+          playHitSound();
+        }
+
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td>${hit.title || ""}</td>
+          <td>${hit.requester || ""}</td>
+          <td>$${hit.reward?.toFixed(2) || "0.00"}</td>
+          <td><span class="badge ${hit.status}">${hit.status}</span></td>
+          <td>${new Date(hit.acceptedAt).toLocaleString()}</td>
+        `;
+        hitsTableBody.appendChild(tr);
+
+        // group totals per day
+        const day = hit.acceptedAt ? hit.acceptedAt.split("T")[0] : "Unknown";
+        if (!dailyTotals[day]) dailyTotals[day] = 0;
+        dailyTotals[day] += hit.reward || 0;
+      });
+
+      // render daily totals
+      dailyTotalsEl.innerHTML = "";
+      Object.keys(dailyTotals).sort().forEach(day => {
+        const li = document.createElement("li");
+        li.textContent = `${day}: $${dailyTotals[day].toFixed(2)}`;
+        dailyTotalsEl.appendChild(li);
+      });
+    }
+
+    // 🔴 Live listener
+    db.collection("hits").onSnapshot(renderHits);
   </script>
 </body>
 </html>
