@@ -3,16 +3,17 @@
 // @namespace   Violentmonkey Scripts
 // @match       https://worker.mturk.com/projects/*/tasks/*
 // @match       https://worker.mturk.com/tasks
-// @grant       GM_xmlhttpRequest
-// @version     3.6
+// @grant        none
+// @run-at       document-idle
+// @version     3.7
 // @updateURL    https://raw.githubusercontent.com/Vinylgeorge/Team-perundurai/refs/heads/main/Mturk_tasks.user.js
 // @downloadURL  https://raw.githubusercontent.com/Vinylgeorge/Team-perundurai/refs/heads/main/Mturk_tasks.user.js
 // ==/UserScript==
 
-(async function () {
+(function() {
   'use strict';
 
-  // ---------- FIREBASE CONFIG ----------
+  /** 🔧 Your Firebase Config */
   const firebaseConfig = {
     apiKey: "AIzaSyD_FH-65A526z8g9iGhSYKulS4yiv5e6Ys",
     authDomain: "mturk-monitor.firebaseapp.com",
@@ -22,16 +23,17 @@
     appId: "1:285174080989:web:e1f607e6a5f80463278234"
   };
 
-  // ---------- LOAD FIREBASE ----------
+  /** 🔧 Firebase loader */
   async function loadFirebase() {
     if (window.firebase) return;
-    // Load compat builds (simpler for userscripts)
+
     await new Promise((resolve) => {
       const s = document.createElement("script");
       s.src = "https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js";
       s.onload = resolve;
       document.head.appendChild(s);
     });
+
     await new Promise((resolve) => {
       const s = document.createElement("script");
       s.src = "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js";
@@ -40,125 +42,120 @@
     });
   }
 
+  let db = null;
   async function initDB() {
     await loadFirebase();
     if (!firebase.apps.length) {
       firebase.initializeApp(firebaseConfig);
     }
-    return firebase.firestore();
+    if (!db) db = firebase.firestore();
+    return db;
   }
 
-  // ---------- HELPERS ----------
-  function parseReward() {
-    try {
-      const rewardEl = [...document.querySelectorAll(".detail-bar-value")]
-        .find(e => /\$/.test(e.innerText));
-      if (rewardEl) {
-        const num = parseFloat(rewardEl.innerText.replace(/[^0-9.]/g, ""));
-        return isNaN(num) ? 0 : num;
-      }
-    } catch (e) {}
-    return 0;
+  /** 🔧 Firestore helpers */
+  async function saveHit(hit) {
+    const ref = db.collection("hits").doc(hit.assignmentId);
+    await ref.set(hit, { merge: true });
   }
 
-  function findWorkerId() {
-    const headerId = document.querySelector(".me-bar .text-uppercase span")?.innerText.trim() || "";
-    return headerId.replace(/^COPIED\s+/i, "");
+  async function deleteHit(assignmentId) {
+    const ref = db.collection("hits").doc(assignmentId);
+    await ref.delete().catch(() => {});
   }
 
-  function scrapeHitInfo() {
-    const requester = document.querySelector(".detail-bar-value a[href*='/requesters']")?.innerText.trim() || "Unknown";
-    const title = document.querySelector(".task-project-title")?.innerText.trim() || document.title;
-    const reward = parseReward();
+  /** 🔧 Parse helpers */
+  function parseReward(rewardStr) {
+    if (!rewardStr) return 0;
+    return parseFloat(rewardStr.replace(/[^0-9.]/g, "")) || 0;
+  }
 
-    const workerId = findWorkerId();
-    const username = document.querySelector(".me-bar a[href='/account']")?.innerText.trim() || "";
-    const assignmentId = new URLSearchParams(window.location.search).get("assignment_id") || `task-${Date.now()}`;
-    const url = window.location.href;
+  /** 📌 Handle Project Task Pages (/projects/*/tasks/*) */
+  async function handleTaskPage() {
+    const assignmentIdMatch = location.href.match(/assignment_id=([^&]+)/);
+    const hitIdMatch = location.href.match(/hitId=([^&]+)/);
+    if (!assignmentIdMatch || !hitIdMatch) return;
 
-    let timeRemainingSeconds = null;
-    const timer = document.querySelector("[data-react-class*='CompletionTimer']");
-    if (timer?.getAttribute("data-react-props")) {
-      try {
-        const props = JSON.parse(timer.getAttribute("data-react-props"));
-        timeRemainingSeconds = props.timeRemainingInSeconds;
-      } catch (e) {}
+    const assignmentId = assignmentIdMatch[1];
+    const hitId = hitIdMatch[1];
+
+    const titleEl = document.querySelector(".task-project-title");
+    const requesterEl = document.querySelector(".detail-bar-value a[href*='/requesters']");
+    const rewardEl = document.querySelector(".detail-bar-value");
+    const rewardStr = rewardEl ? rewardEl.textContent.trim() : "$0.00";
+
+    const hit = {
+      assignmentId,
+      hitId,
+      title: titleEl ? titleEl.textContent.trim() : "Unknown",
+      requester: requesterEl ? requesterEl.textContent.trim() : "Unknown",
+      reward: parseReward(rewardStr),
+      acceptedAt: new Date().toISOString(),
+      status: "accepted"
+    };
+
+    await saveHit(hit);
+
+    /** Cleanup on submit or return */
+    const returnBtn = document.querySelector("form[action*='return'] button[type=submit]");
+    if (returnBtn) {
+      returnBtn.addEventListener("click", () => {
+        deleteHit(assignmentId);
+      });
     }
 
-    return {
-      assignmentId,
-      requester,
-      title,
-      reward,
-      workerId,
-      username,
-      acceptedAt: new Date().toISOString(),
-      url,
-      status: "accepted",
-      timeRemainingSeconds,
-      updatedAt: new Date().toISOString()
-    };
-  }
-
-  // ---------- FIRESTORE OPS ----------
-  async function saveHit(db, hit) {
-    await db.collection("history").doc(hit.assignmentId).set(hit, { merge: true });
-    console.log("[Firestore] ✅ Saved HIT", hit.assignmentId);
-  }
-
-  async function updateHitStatus(db, assignmentId, status) {
-    await db.collection("history").doc(assignmentId)
-      .set({ status, updatedAt: new Date().toISOString() }, { merge: true });
-    console.log(`[Firestore] 🗑️ ${assignmentId} → ${status}`);
-  }
-
-  async function removeMissingFromQueue(db, currentIds) {
-    const snap = await db.collection("history").get();
-    snap.forEach(doc => {
-      const d = doc.data();
-      if (d.status === "accepted" && !currentIds.includes(d.assignmentId)) {
-        updateHitStatus(db, d.assignmentId, "removed_from_queue");
-      }
-    });
-  }
-
-  // ---------- PAGE LOGIC ----------
-  async function handleTaskPage() {
-    const db = await initDB();
-    const hit = scrapeHitInfo();
-    if (hit && hit.assignmentId) {
-      await saveHit(db, hit);
-
-      if (hit.timeRemainingSeconds) {
-        setTimeout(() => updateHitStatus(db, hit.assignmentId, "expired"), hit.timeRemainingSeconds * 1000);
-      }
-
-      const forms = document.querySelectorAll("form[action*='/submit'], form[action*='/return']");
-      forms.forEach(f => {
-        f.addEventListener("submit", () => {
-          const reason = f.action.includes("/return") ? "returned" : "submitted";
-          updateHitStatus(db, hit.assignmentId, reason);
-        });
+    const submitForm = document.querySelector("form[action*='/submit']");
+    if (submitForm) {
+      submitForm.addEventListener("submit", () => {
+        deleteHit(assignmentId);
       });
     }
   }
 
+  /** 📌 Handle Queue Page (/tasks) */
   async function handleQueuePage() {
-    const db = await initDB();
-    const ids = [];
-    document.querySelectorAll("a[href*='assignment_id=']").forEach(a => {
-      const m = a.href.match(/assignment_id=([^&]+)/);
-      if (m) ids.push(m[1]);
+    // Get assignment IDs currently in queue
+    const queueTable = document.querySelector("div[data-react-class*='TaskQueueTable']");
+    if (!queueTable) return;
+
+    // React props hack: Firestore pruning based on queue contents
+    const bodyData = queueTable.getAttribute("data-react-props");
+    if (!bodyData) return;
+
+    let parsed;
+    try {
+      parsed = JSON.parse(bodyData);
+    } catch (e) {
+      console.warn("Failed to parse queue data:", e);
+      return;
+    }
+
+    const activeIds = new Set();
+    if (parsed.bodyData) {
+      parsed.bodyData.forEach((row) => {
+        if (row && row.assignmentId) activeIds.add(row.assignmentId);
+      });
+    }
+
+    // Prune old Firestore entries not in active queue
+    const snap = await db.collection("hits").get();
+    snap.forEach(async (doc) => {
+      if (!activeIds.has(doc.id)) {
+        await deleteHit(doc.id);
+      }
     });
-
-    await removeMissingFromQueue(db, ids);
-    console.log("[Firestore] 🔄 Synced queue, active IDs:", ids);
   }
 
-  // ---------- INIT ----------
-  if (location.pathname.startsWith("/projects/") && location.pathname.includes("/tasks/")) {
-    window.addEventListener("load", handleTaskPage);
-  } else if (location.pathname === "/tasks") {
-    window.addEventListener("load", handleQueuePage);
+  /** 📌 Bootstrap */
+  async function bootstrap() {
+    await initDB();
+
+    if (location.pathname.startsWith("/projects/") && location.pathname.includes("/tasks/")) {
+      await handleTaskPage();
+    } else if (location.pathname === "/tasks") {
+      await handleQueuePage();
+    }
   }
+
+  window.addEventListener("load", bootstrap);
+
 })();
