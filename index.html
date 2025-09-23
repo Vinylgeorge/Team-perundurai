@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>📊 MTurk Monitor </title>
+  <title>📊 MTurk Monitor</title>
   <style>
     body {
       font-family: "Segoe UI", Inter, Roboto, Arial, sans-serif;
@@ -86,7 +86,7 @@
 <body>
   <header>
     <h1>📊 MTurk Monitor</h1>
-    <p>Realtime Mturk Queue</p>
+    <p>Realtime Queue</p>
   </header>
 
   <div class="card">
@@ -112,6 +112,14 @@
 
     const hitsRef = collection(db, "hits");
     const tableContainer = document.getElementById("tableContainer");
+
+    // Track seen HITs to detect new ones
+    const seenHits = new Set();
+
+    function playNewHitSound() {
+      const audio = new Audio("https://www.allbyjohn.com/sounds/mturkscanner/lessthan15Short.mp3");
+      audio.play().catch(() => {});
+    }
 
     function buildTable(hits) {
       if (!hits.length) {
@@ -153,7 +161,16 @@
     // 🔴 Realtime Firestore Subscription
     onSnapshot(hitsRef, (snapshot) => {
       const hits = [];
-      snapshot.forEach(doc => hits.push(doc.data()));
+      snapshot.forEach(doc => {
+        const hit = doc.data();
+        hits.push(hit);
+
+        // 🚨 Play sound if this HIT is new
+        if (hit.assignmentId && !seenHits.has(hit.assignmentId)) {
+          seenHits.add(hit.assignmentId);
+          playNewHitSound();
+        }
+      });
       buildTable(hits);
       console.log("🔄 Firestore update:", hits.length);
     });
