@@ -12,6 +12,7 @@
       --muted:#6b7280;
       --accent:#0f62fe;
       --border:#e6e9ef;
+      --highlight:#ff3b3b;
     }
     body{
       font-family: Inter, Roboto, Arial, sans-serif;
@@ -36,7 +37,16 @@
     tbody tr:hover{ background:#fbfdff; }
     .small{ font-size:13px; color:var(--muted); }
     .empty{ padding:40px; text-align:center; color:var(--muted); }
-    footer{ margin-top:12px; color:var(--muted); font-size:13px; }
+    footer{ margin-top:12px; color:var(--muted); font-size:13px; display:flex; justify-content:space-between; }
+
+    /* Blink effect for Last Updated */
+    .highlight {
+      animation: blink 1s ease-in-out 2;
+    }
+    @keyframes blink {
+      0%, 100% { color: var(--muted); }
+      50% { color: var(--highlight); font-weight: bold; }
+    }
   </style>
 </head>
 <body>
@@ -61,14 +71,16 @@
 
     <footer>
       <div><strong>Source:</strong> <span id="binInfo" class="small">jsonbin.io + Google Sheets</span></div>
+      <div><strong>Last Updated:</strong> <span id="lastUpdated" class="small">Never</span></div>
     </footer>
   </div>
 
   <script>
     // ----- CONFIGURE HERE -----
-   const BIN_ID = "68d2321a43b1c97be94c8bae";   // your JSONBin Bin ID
-  const API_KEY = "$2a$10$A.SoqiP97zRaXeCvjTaiIO8n8uLRDY0uNI4B7vb365gAhZlBgN5Ki";
+    const BIN_ID = "68d2321a43b1c97be94c8bae";   // your JSONBin Bin ID
+    const API_KEY = "$2a$10$A.SoqiP97zRaXeCvjTaiIO8n8uLRDY0uNI4B7vb365gAhZlBgN5Ki";
     const SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/1oyR6URA8qOmg6Zo90Df4w1h5lckOmjVC_9JrE-AXouM/export?format=csv";
+    const SIREN_URL = "https://www.soundjay.com/ambulance/ambulance-siren-1.mp3"; // 🚑 siren sound
     // --------------------------
 
     const REFRESH_INTERVAL_MS = 10000; // 10s
@@ -77,12 +89,14 @@
     const autoRefreshCheckbox = document.getElementById("autoRefresh");
     const csvBtn = document.getElementById("csvBtn");
     const binInfo = document.getElementById("binInfo");
+    const lastUpdatedEl = document.getElementById("lastUpdated");
 
     const BIN_URL = `https://api.jsonbin.io/v3/b/${BIN_ID}`;
     binInfo.textContent = `jsonbin.io — bin: ${BIN_ID}`;
 
     let latestHits = [];
     let userMap = {}; // WorkerID → User
+    let lastUpdatedAt = null; // track last meta update
 
     // ---------- UTILITIES ----------
     function fmtTimeRemaining(sec){
@@ -151,7 +165,7 @@
         const requester = safeText(hit.requester || "Unknown");
         const reward = (hit.reward == null) ? "-" : `$${Number(hit.reward).toFixed(2)}`;
         const workerId = safeText(hit.workerId || "-");
-        const user = safeText(hit.user || userMap[hit.workerId] || "-"); // ← merge Sheet + JSONBin
+        const user = safeText(hit.user || userMap[hit.workerId] || "-");
         const ip = safeText(hit.ip || "34.220.34.216");
         const username = safeText(hit.username || "administrator");
         const timeRemaining = fmtTimeRemaining(Number(hit.timeRemainingSeconds));
@@ -178,21 +192,66 @@
       tableContainer.innerHTML = html.join("");
     }
 
-    // ---------- JSONBIN ----------
+    // ---------- JSONBIN (META-CHECK) ----------
+    async function fetchBinMeta(){
+      const headers = API_KEY
+        ? { "X-Master-Key": API_KEY, "X-Bin-Meta": "true" }
+        : { "X-Bin-Meta": "true" };
+      const res = await fetch(BIN_URL, { headers, cache: "no-store" });
+      if (!res.ok) throw new Error(`Meta fetch failed (${res.status})`);
+      const js = await res.json();
+      return js?.metadata?.updatedAt || null;
+    }
+
+    async function fetchFullBin(){
+      const headers = API_KEY
+        ? { "X-Master-Key": API_KEY, "Content-Type":"application/json" }
+        : { "Content-Type":"application/json" };
+      const res = await fetch(BIN_URL, { headers, cache: "no-store" });
+      if (!res.ok) throw new Error(`Full fetch failed (${res.status})`);
+      const json = await res.json();
+      let hits = json?.record ?? json;
+      while (
+        hits && typeof hits === "object" &&
+        !Array.isArray(hits) &&
+        hits.record && Array.isArray(hits.record)
+      ) {
+        hits = hits.record;
+      }
+      if (!Array.isArray(hits)) throw new Error("Unexpected data format from JSONBin");
+      return hits;
+    }
+
     async function fetchBin(){
-      const headers = API_KEY ? { "X-Master-Key": API_KEY, "Content-Type":"application/json" } : { "Content-Type":"application/json" };
       try {
-        const res = await fetch(BIN_URL, { headers, cache: "no-store" });
-        if (!res.ok) throw new Error(`Fetch failed (${res.status})`);
-        const json = await res.json();
-        let hits = json?.record ?? json;
-        while (hits && typeof hits === "object" && !Array.isArray(hits) && hits.record && Array.isArray(hits.record)) {
-          hits = hits.record;
+        const updatedAt = await fetchBinMeta();
+        if (updatedAt && updatedAt === lastUpdatedAt) {
+          console.log("[MTurk Monitor] ⏸ No change in metadata, skipping full data fetch.");
+          return;
         }
-        if (!Array.isArray(hits)) throw new Error("Unexpected data format from JSONBin — expected an array at 'record'");
+        lastUpdatedAt = updatedAt;
+
+        const hits = await fetchFullBin();
+
+        // 🔔 Play siren if new HITs arrived
+        const prevIds = new Set(latestHits.map(h => h.assignmentId));
+        const newIds = hits.map(h => h.assignmentId).filter(id => !prevIds.has(id));
+        if (newIds.length > 0) {
+          const audio = new Audio(SIREN_URL);
+          audio.play().catch(err => console.warn("Audio play blocked:", err));
+          console.log("[MTurk Monitor] 🚨 New HITs detected:", newIds);
+        }
+
         buildTable(hits);
+
+        // Update footer timestamp + blink effect
+        lastUpdatedEl.textContent = new Date().toLocaleString();
+        lastUpdatedEl.classList.add("highlight");
+        setTimeout(() => lastUpdatedEl.classList.remove("highlight"), 2000);
+
+        console.log("[MTurk Monitor] ✅ Data updated (fetched full bin).");
       } catch (err) {
-        console.error("Failed to load JSONBin:", err);
+        console.error("Error during fetchBin:", err);
         tableContainer.innerHTML = `<div class="empty">Failed to load JSONBin: ${safeText(err.message)}</div>`;
       }
     }
@@ -235,8 +294,8 @@
     });
 
     (async function init(){
-      await fetchUserMap(); // load sheet
-      await fetchBin();     // then load JSONBin
+      await fetchUserMap();
+      await fetchBin();
     })();
   </script>
 </body>
