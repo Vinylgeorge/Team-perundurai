@@ -3,20 +3,21 @@
 // @namespace   Violentmonkey Scripts
 // @match       https://worker.mturk.com/projects/*/tasks/*
 // @grant       GM_xmlhttpRequest
-// @version     3.1
+// @version     3.2
 // @updateURL    https://raw.githubusercontent.com/Vinylgeorge/Team-perundurai/refs/heads/main/Mturk_tasks.user.js
 // @downloadURL  https://raw.githubusercontent.com/Vinylgeorge/Team-perundurai/refs/heads/main/Mturk_tasks.user.js
 // ==/UserScript==
 
-(async function () {
+(function () {
   'use strict';
 
   const script = document.createElement("script");
   script.type = "module";
   script.textContent = `
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-    import { getFirestore, doc, setDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+    import { getFirestore, setDoc, doc, collection, getDocs, deleteDoc } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
+    // 🔑 Firebase Config
     const firebaseConfig = {
       apiKey: "AIzaSyD_FH-65A526z8g9iGhSYKulS4yiv5e6Ys",
       authDomain: "mturk-monitor.firebaseapp.com",
@@ -29,99 +30,78 @@
     const app = initializeApp(firebaseConfig);
     const db = getFirestore(app);
 
+    // -------------- HELPERS --------------
+    function parseReward() {
+      const rewardLabel = Array.from(document.querySelectorAll(".detail-bar-label"))
+        .find(el => el.innerText.trim().toLowerCase() === "reward");
+      if (rewardLabel) {
+        const valEl = rewardLabel.parentElement.querySelector(".detail-bar-value");
+        if (valEl) {
+          const num = parseFloat(valEl.innerText.replace(/[^0-9.]/g, ""));
+          if (!isNaN(num)) return num;
+        }
+      }
+      return 0;
+    }
+
     function scrapeHitInfo() {
-      const assignmentId =
-        new URLSearchParams(window.location.search).get("assignment_id") ||
-        \`task-\${Date.now()}\`;
+      const assignmentId = new URLSearchParams(window.location.search).get("assignment_id") || "unknown";
+      if (assignmentId === "unknown") return null;
 
-      const requester =
-        document.querySelector(".detail-bar-value a[href*='/requesters']")
-          ?.innerText.trim() || "Unknown";
+      const requester = document.querySelector(".detail-bar-value a[href*='/requesters']")?.innerText.trim() || "Unknown";
+      const title = document.querySelector(".task-project-title")?.innerText.trim() || document.title;
+      const reward = parseReward();
 
-      const title =
-        document.querySelector(".task-project-title")?.innerText.trim() ||
-        document.title;
-
-      // ✅ Numeric reward only
-      let reward = 0;
-      try {
-        const rewardText =
-          document.querySelector(".detail-bar-value")?.innerText || "";
-        reward = parseFloat(rewardText.replace(/[^0-9.]/g, "")) || 0;
-      } catch {}
-
-      // ✅ Worker ID (cleaned)
-      let workerId =
-        document.querySelector(".me-bar .text-uppercase span")?.innerText.trim() ||
-        "unknown";
+      let workerId = document.querySelector(".me-bar .text-uppercase span")?.innerText.trim() || "unknown";
       workerId = workerId.replace(/^COPIED\\s+/i, "");
 
-      // ⏳ Time Remaining
-      let timeRemainingSeconds = null;
-      const timer = document.querySelector("[data-react-class*='CompletionTimer']");
-      if (timer?.getAttribute("data-react-props")) {
-        try {
-          const props = JSON.parse(timer.getAttribute("data-react-props"));
-          timeRemainingSeconds = props.timeRemainingInSeconds;
-        } catch {}
-      }
+      const acceptedAt = new Date().toISOString();
 
-      return {
-        assignmentId,
-        requester,
-        title,
-        reward,
-        workerId,
-        acceptedAt: new Date().toISOString(),
-        timeRemainingSeconds,
-        status: "accepted" // default when accepted
-      };
+      return { assignmentId, requester, title, reward, workerId, acceptedAt, status: "accepted" };
     }
 
     async function saveHit(hit) {
-      // Save to active queue
       await setDoc(doc(db, "hits", hit.assignmentId), hit);
-
-      // Save to history (append/update)
       await setDoc(doc(db, "history", hit.assignmentId), hit);
+      console.log("✅ Saved HIT:", hit.assignmentId);
+    }
 
-      console.log("✅ HIT saved:", hit.assignmentId);
+    async function syncQueue() {
+      const activeIds = new Set();
 
-      // Auto-expire
-      if (hit.timeRemainingSeconds) {
-        setTimeout(async () => {
-          await deleteDoc(doc(db, "hits", hit.assignmentId));
-          await setDoc(doc(db, "history", hit.assignmentId), {
-            ...hit,
-            status: "expired",
+      // extract assignmentIds from queue page
+      document.querySelectorAll("a[href*='assignment_id=']").forEach(a => {
+        const m = a.href.match(/assignment_id=([^&]+)/);
+        if (m) activeIds.add(m[1]);
+      });
+
+      console.log("📋 Active HITs in MTurk queue:", [...activeIds]);
+
+      // get all hits from Firestore
+      const snap = await getDocs(collection(db, "hits"));
+      for (const d of snap.docs) {
+        if (!activeIds.has(d.id)) {
+          await deleteDoc(doc(db, "hits", d.id));
+          await setDoc(doc(db, "history", d.id), {
+            assignmentId: d.id,
+            status: "submitted/returned/expired",
             removedAt: new Date().toISOString()
-          });
-          console.log("🗑️ HIT expired:", hit.assignmentId);
-        }, hit.timeRemainingSeconds * 1000);
+          }, { merge: true });
+          console.log("🗑️ Removed stale HIT:", d.id);
+        }
       }
     }
 
-    async function removeHit(assignmentId, status = "removed") {
-      await deleteDoc(doc(db, "hits", assignmentId));
-      await setDoc(doc(db, "history", assignmentId), {
-        assignmentId,
-        status,
-        removedAt: new Date().toISOString()
-      }, { merge: true });
-      console.log(\`🗑️ HIT \${status}:\`, assignmentId);
+    // -------------- ROUTING --------------
+    if (location.pathname.startsWith("/projects/") && location.pathname.includes("/tasks/")) {
+      // On HIT page → capture
+      const hit = scrapeHitInfo();
+      if (hit) saveHit(hit);
     }
 
-    const hit = scrapeHitInfo();
-    if (hit) {
-      await saveHit(hit);
-
-      // Watch for submit/return
-      const forms = document.querySelectorAll("form[action*='/submit'], form[action*='/return']");
-      forms.forEach(f => {
-        f.addEventListener("submit", () => {
-          removeHit(hit.assignmentId, "submitted/returned");
-        });
-      });
+    if (location.pathname === "/tasks") {
+      // On queue page → sync once
+      syncQueue();
     }
   `;
   document.head.appendChild(script);
