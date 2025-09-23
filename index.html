@@ -33,69 +33,77 @@
   <div id="tableContainer">Loading...</div>
 
   <script type="module">
-    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-    import { getFirestore, collection, onSnapshot } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+  import { getFirestore, collection, onSnapshot } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
-    // 🔑 Firebase Config
-    const firebaseConfig = {
-      apiKey: "AIzaSyD_FH-65A526z8g9iGhSYKulS4yiv5e6Ys",
-      authDomain: "mturk-monitor.firebaseapp.com",
-      projectId: "mturk-monitor",
-      storageBucket: "mturk-monitor.firebasestorage.app",
-      messagingSenderId: "285174080989",
-      appId: "1:285174080989:web:e1f607e6a5f80463278234"
-    };
+  const firebaseConfig = {
+    apiKey: "AIzaSyD_FH-65A526z8g9iGhSYKulS4yiv5e6Ys",
+    authDomain: "mturk-monitor.firebaseapp.com",
+    projectId: "mturk-monitor",
+    storageBucket: "mturk-monitor.firebasestorage.app",
+    messagingSenderId: "285174080989",
+    appId: "1:285174080989:web:e1f607e6a5f80463278234"
+  };
 
-    const app = initializeApp(firebaseConfig);
-    const db = getFirestore(app);
+  const app = initializeApp(firebaseConfig);
+  const db = getFirestore(app);
 
-    const hitsRef = collection(db, "hits");
-    const tableContainer = document.getElementById("tableContainer");
+  const hitsRef = collection(db, "hits");
+  const tableContainer = document.getElementById("tableContainer");
 
-    function buildTable(hits) {
-      if (!hits.length) {
-        tableContainer.innerHTML = "<p>No HITs in queue</p>";
-        return;
-      }
-
-      let html = `
-        <table>
-          <thead>
-            <tr>
-              <th>Requester</th>
-              <th>Title</th>
-              <th>Reward</th>
-              <th>Worker ID</th>
-              <th>Accepted At</th>
-            </tr>
-          </thead>
-          <tbody>
-      `;
-
-      for (const hit of hits) {
-        const formattedReward = hit.reward ? `$${Number(hit.reward).toFixed(2)}` : "-";
-        html += `
-          <tr>
-            <td>${hit.requester}</td>
-            <td>${hit.title}</td>
-            <td>${formattedReward}</td>
-            <td>${hit.workerId}</td>
-            <td>${new Date(hit.acceptedAt).toLocaleString()}</td>
-          </tr>
-        `;
-      }
-
-      html += "</tbody></table>";
-      tableContainer.innerHTML = html;
+  function buildTable(hits) {
+    if (!hits.length) {
+      tableContainer.innerHTML = "<p>No HITs in queue</p>";
+      return;
     }
 
-    // 🔴 Realtime Firestore Subscription
-    onSnapshot(hitsRef, (snapshot) => {
-      const hits = [];
-      snapshot.forEach(doc => hits.push(doc.data()));
-      buildTable(hits);
-      console.log("🔄 Firestore update:", hits.length);
-    });
-  </script>
+    let html = `
+      <table>
+        <thead>
+          <tr>
+            <th>Requester</th>
+            <th>Title</th>
+            <th>Reward</th>
+            <th>Worker ID</th>
+            <th>Accepted At</th>
+          </tr>
+        </thead>
+        <tbody>
+    `;
+
+    for (const hit of hits) {
+      let formattedReward = "-";
+      if (hit.reward) {
+        if (typeof hit.reward === "string" && hit.reward.trim().startsWith("$")) {
+          formattedReward = hit.reward.trim();
+        } else {
+          const num = Number(hit.reward);
+          formattedReward = isNaN(num) ? "-" : `$${num.toFixed(2)}`;
+        }
+      }
+
+      html += `
+        <tr>
+          <td>${hit.requester}</td>
+          <td>${hit.title}</td>
+          <td>${formattedReward}</td>
+          <td>${hit.workerId}</td>
+          <td>${new Date(hit.acceptedAt).toLocaleString()}</td>
+        </tr>
+      `;
+    }
+
+    html += "</tbody></table>";
+    tableContainer.innerHTML = html;
+  }
+
+  // 🔴 Realtime Firestore Subscription
+  onSnapshot(hitsRef, (snapshot) => {
+    const hits = [];
+    snapshot.forEach(doc => hits.push(doc.data()));
+    buildTable(hits);
+    console.log("🔄 Firestore update:", hits.length);
+  });
+</script>
 </body>
 </html>
