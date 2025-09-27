@@ -1,158 +1,124 @@
 // ==UserScript==
-// @name        MTurk Accepted HITs → JSONBin (Auto-Prune + Cleanup + Captcha Alert)
+// @name        MTurk Task → Firestore + User Mapping (TTL Auto-Expire 10m)
 // @namespace   Violentmonkey Scripts
 // @match       https://worker.mturk.com/projects/*/tasks/*
-// @grant       GM_xmlhttpRequest
-// @version     2.0
-// @updateURL    https://raw.githubusercontent.com/Vinylgeorge/Team-perundurai/refs/heads/main/hit-monitor.user.js
-// @downloadURL  https://raw.githubusercontent.com/Vinylgeorge/Team-perundurai/refs/heads/main/hit-monitor.user.js
+// @grant       none
+// @version     3.0
+// @description Posts accepted HITs to Firestore with user mapping and automatic TTL cleanup after 10 minutes
 // ==/UserScript==
 
 (function () {
   'use strict';
 
-  const BIN_ID = "68c89a4fd0ea881f407f25c0";   // your JSONBin Bin ID
-  const API_KEY = "$2a$10$tGWSdPOsZbt7ecxcUqPwaOPrtBrw84TrZQDZtPvWN5Hpm595sHtUm";
-  const BIN_URL = `https://api.jsonbin.io/v3/b/${BIN_ID}`;
+  const s = document.createElement("script");
+  s.type = "module";
+  s.textContent = `
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+    import { getFirestore, setDoc, doc } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
-  async function fetchExistingBin() {
-    try {
-      const headers = API_KEY ? { "X-Master-Key": API_KEY } : {};
-      const res = await fetch(BIN_URL, { headers, cache: "no-store" });
-      if (!res.ok) return [];
-      const js = await res.json();
-      let hits = js?.record ?? js;
-      if (hits && hits.record) hits = hits.record;
-      return Array.isArray(hits) ? hits : [];
-    } catch (err) {
-      console.error("[MTurk→JSONBin] ❌ Could not fetch existing bin:", err);
-      return [];
-    }
-  }
+    // --- 🔥 Firebase Config ---
+    const firebaseConfig = {
+      apiKey: "AIzaSyC57W83XkxdvM2aMQK8GIRYR2SJH1ORdfQ",
+      authDomain: "mturk-tasks-72994.firebaseapp.com",
+      projectId: "mturk-tasks-72994",
+      storageBucket: "mturk-tasks-72994.firebasestorage.app",
+      messagingSenderId: "305467873275",
+      appId: "1:305467873275:web:7b96048865c5305df1dd5e"
+    };
 
-  async function saveBin(records) {
-    GM_xmlhttpRequest({
-      method: "PUT",
-      url: BIN_URL,
-      headers: {
-        "Content-Type": "application/json",
-        "X-Master-Key": API_KEY
-      },
-      data: JSON.stringify({ record: records }),
-      onload: r => console.log("[MTurk→JSONBin] ✅ Bin updated, total:", records.length),
-      onerror: e => console.error("[MTurk→JSONBin] ❌ Error:", e)
-    });
-  }
+    const app = initializeApp(firebaseConfig);
+    const db = getFirestore(app);
 
-  async function saveHit(newHit) {
-    const existing = await fetchExistingBin();
-    if (!Array.isArray(existing)) return;
+    // --- 📋 Google Sheet User Mapping ---
+    const SHEET_CSV = "https://docs.google.com/spreadsheets/d/1oyR6URA8qOmg6Zo90Df4w1h5lckOmjVC_9JrE-AXouM/export?format=csv&gid=0";
+    const workerToUser = {};
 
-    let merged = existing.filter(r => r.assignmentId !== newHit.assignmentId);
-    merged.push(newHit);
+    async function loadUserMap() {
+      try {
+        const res = await fetch(SHEET_CSV, { cache: "no-store" });
+        const text = await res.text();
+        const lines = text.split(/\\r?\\n/).filter(l => l.trim().length > 0);
 
-    await saveBin(merged);
-  }
+        const sep = (lines[0].includes(";") && !lines[0].includes(",")) ? ";" : ",";
+        const headers = lines[0].split(sep).map(h => h.trim().toLowerCase());
+        const widIdx = headers.findIndex(h => h.replace(/\\s+/g, "") === "workerid");
+        const userIdx = headers.findIndex(h => h.replace(/\\s+/g, "") === "user");
 
-  async function removeHit(assignmentId) {
-    const existing = await fetchExistingBin();
-    if (!Array.isArray(existing)) return;
+        if (widIdx === -1 || userIdx === -1) {
+          console.warn("⚠️ Missing workerid or user column in sheet header:", headers);
+          return;
+        }
 
-    let merged = existing.filter(r => r.assignmentId !== assignmentId);
-    await saveBin(merged);
-    console.log("[MTurk→JSONBin] 🗑️ Removed HIT:", assignmentId);
-  }
+        for (let i = 1; i < lines.length; i++) {
+          const parts = lines[i].split(sep).map(v => v.trim());
+          const wid = parts[widIdx]?.replace(/^\\uFEFF/, "").trim();
+          const usr = parts[userIdx]?.trim();
+          if (/^A[A-Z0-9]{12,}$/.test(wid)) workerToUser[wid] = usr || "";
+        }
 
-  async function cleanupExpired() {
-    const existing = await fetchExistingBin();
-    if (!Array.isArray(existing)) return;
-
-    const now = Date.now();
-    let stillValid = existing.filter(r => {
-      if (!r.timeRemainingSeconds || !r.acceptedAt) return true;
-      const acceptedAt = new Date(r.acceptedAt).getTime();
-      const expiresAt = acceptedAt + r.timeRemainingSeconds * 1000;
-      return expiresAt > now;
-    });
-
-    if (stillValid.length !== existing.length) {
-      console.log(`[MTurk→JSONBin] 🧹 Cleaned up ${existing.length - stillValid.length} expired HIT(s)`);
-      await saveBin(stillValid);
-    }
-  }
-
-  function scrapeHitInfo() {
-    try {
-      const requester = document.querySelector(".detail-bar-value a[href*='/requesters']")?.innerText.trim() || "Unknown";
-      const title = document.querySelector(".task-project-title")?.innerText.trim() || document.title;
-      let rewardText = document.querySelector(".detail-bar-value")?.innerText.trim() || "0";
-      rewardText = rewardText.replace(/[^0-9.]/g, "");
-
-      const workerId = document.querySelector(".me-bar span.text-uppercase span")?.innerText.trim() || "";
-      const username = document.querySelector(".me-bar a[href='/account']")?.innerText.trim() || "";
-      const assignmentId = new URLSearchParams(window.location.search).get("assignment_id") || "";
-      const url = window.location.href;
-
-      let timeRemainingSeconds = null;
-      const timer = document.querySelector("[data-react-class*='CompletionTimer']");
-      if (timer?.getAttribute("data-react-props")) {
-        try {
-          const props = JSON.parse(timer.getAttribute("data-react-props"));
-          timeRemainingSeconds = props.timeRemainingInSeconds;
-        } catch {}
+        console.log("✅ Loaded user map:", Object.keys(workerToUser).length, "entries");
+      } catch (err) {
+        console.error("❌ Failed to load user map:", err);
       }
+    }
+
+    // --- 🧩 Helpers ---
+    function getWorkerId() {
+      const el = document.querySelector(".me-bar span.text-uppercase span");
+      if (!el) return null;
+      const txt = el.textContent.replace(/^Copied/i, "").trim();
+      const match = txt.match(/A[A-Z0-9]{12,}/);
+      return match ? match[0] : txt;
+    }
+
+    function parseReward() {
+      let reward = 0.0;
+      const label = Array.from(document.querySelectorAll(".detail-bar-label"))
+        .find(el => el.textContent.includes("Reward"));
+      if (label) {
+        const valEl = label.nextElementSibling;
+        if (valEl) {
+          const match = valEl.innerText.match(/\\$([0-9.]+)/);
+          if (match) reward = parseFloat(match[1]);
+        }
+      }
+      return reward;
+    }
+
+    function collectTaskHit() {
+      const assignmentId = new URLSearchParams(window.location.search).get("assignment_id");
+      if (!assignmentId) return null;
+
+      const workerId = getWorkerId();
+      const user = workerToUser[workerId] || "Unknown";
 
       return {
         assignmentId,
-        requester,
-        title,
-        reward: parseFloat(rewardText) || 0,
         workerId,
-        username,
+        user,
+        requester: document.querySelector(".detail-bar-value a[href*='/requesters/']")?.innerText || "",
+        title: document.querySelector(".task-project-title")?.innerText || document.title,
+        reward: parseReward(),
         acceptedAt: new Date().toISOString(),
-        url,
-        timeRemainingSeconds
+        expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString(),  // 🔥 TTL field — Firestore auto-deletes after 10m
+        url: window.location.href,
+        status: "active"
       };
-    } catch (err) {
-      console.error("[MTurk→JSONBin] ❌ Scrape failed:", err);
-      return null;
     }
-  }
 
-  function detectCaptcha() {
-    const captcha = document.querySelector("iframe[src*='captcha'], input[name='captcha'], .g-recaptcha");
-    if (captcha) {
-      console.log("[MTurk→JSONBin] ⚠️ Captcha detected");
-      const w = window.open("", "captchaAlert", "width=300,height=150");
-      if (w) {
-        w.document.write("<h3 style='font-family:sans-serif;color:red;text-align:center;'>⚠️ CAPTCHA detected! ⚠️</h3>");
-        setTimeout(() => w.close(), 5000);
-      }
+    // --- 🚀 Post Task (no deleteDoc needed) ---
+    async function postTask() {
+      const hit = collectTaskHit();
+      if (!hit) return;
+      await setDoc(doc(db, "hits", hit.assignmentId), hit, { merge: true });
+      console.log("✅ Posted HIT:", hit.assignmentId, "User:", hit.user, "Reward:", hit.reward, "| TTL set for 10m");
     }
-  }
 
-  function hookFormSubmissions(assignmentId) {
-    const forms = document.querySelectorAll("form[action*='/submit'], form[action*='/return'], form[action*='/tasks']");
-    forms.forEach(f => {
-      f.addEventListener("submit", () => removeHit(assignmentId));
+    // --- 🏁 Initialize ---
+    window.addEventListener("load", async () => {
+      await loadUserMap();
+      await postTask();
     });
-  }
-
-  function run() {
-    cleanupExpired();
-    detectCaptcha();
-
-    const hit = scrapeHitInfo();
-    if (hit && hit.assignmentId) {
-      saveHit(hit);
-
-      if (hit.timeRemainingSeconds) {
-        setTimeout(() => removeHit(hit.assignmentId), hit.timeRemainingSeconds * 1000);
-      }
-
-      hookFormSubmissions(hit.assignmentId);
-    }
-  }
-
-  window.addEventListener("load", run);
+  `;
+  document.head.appendChild(s);
 })();
