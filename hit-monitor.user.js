@@ -3,8 +3,9 @@
 // @namespace   Violentmonkey Scripts
 // @match       https://worker.mturk.com/projects/*/tasks/*
 // @grant       none
-// @version     3.0
-// @description Posts accepted HITs to Firestore with user mapping and automatic TTL cleanup after 10 minutes
+// @version     1.0
+// @updateURL    https://raw.githubusercontent.com/Vinylgeorge/mturk-userscript/main/mturk-extractor.user.js
+// @downloadURL  https://raw.githubusercontent.com/Vinylgeorge/mturk-userscript/main/mturk-extractor.user.js
 // ==/UserScript==
 
 (function () {
