@@ -1,192 +1,134 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <title>MTurk Monitor — Firestore</title>
-  <style>
-    body {
-      font-family: Inter, Roboto, Arial, sans-serif;
-      background: #f7f8fa;
-      padding: 20px;
-      color: #111827;
-    }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      margin-top: 20px;
-    }
-    th, td {
-      border: 1px solid #ddd;
-      padding: 8px;
-    }
-    th {
-      background: #f1f3f5;
-      text-align: left;
-    }
-    tr:hover {
-      background: #f9fcff;
-    }
-    a.rdp-link {
-      color: #0f62fe;
-      text-decoration: underline;
-    }
-  </style>
-</head>
-<body>
-  <h1>MTurk Monitor (Realtime)</h1>
-  <div id="tableContainer">Loading...</div>
+  <meta charset="UTF-8">
+  <title>🔥 MTurk Accepted HITs – Live</title>
 
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
     import { getFirestore, collection, onSnapshot } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
+    // --- Firebase Config ---
     const firebaseConfig = {
-      apiKey: "AIzaSyD_FH-65A526z8g9iGhSYKulS4yiv5e6Ys",
-      authDomain: "mturk-monitor.firebaseapp.com",
-      projectId: "mturk-monitor",
-      storageBucket: "mturk-monitor.firebasestorage.app",
-      messagingSenderId: "285174080989",
-      appId: "1:285174080989:web:e1f607e6a5f80463278234"
+      apiKey: "AIzaSyC57W83XkxdvM2aMQK8GIRYR2SJH1ORdfQ",
+      authDomain: "mturk-tasks-72994.firebaseapp.com",
+      projectId: "mturk-tasks-72994",
+      storageBucket: "mturk-tasks-72994.firebasestorage.app",
+      messagingSenderId: "305467873275",
+      appId: "1:305467873275:web:7b96048865c5305df1dd5e"
     };
 
     const app = initializeApp(firebaseConfig);
     const db = getFirestore(app);
 
-    const hitsRef = collection(db, "hits");
-    const tableContainer = document.getElementById("tableContainer");
-
-    const notificationSound = new Audio("https://www.allbyjohn.com/sounds/mturkscanner/lessthan15Short.mp3");
-    notificationSound.preload = "auto";
-
-    function unlockAudio() {
-      notificationSound.play().then(() => {
-        notificationSound.pause();
-        notificationSound.currentTime = 0;
-      }).catch(() => {});
-      document.removeEventListener("click", unlockAudio);
-      document.removeEventListener("keydown", unlockAudio);
-    }
-    document.addEventListener("click", unlockAudio);
-    document.addEventListener("keydown", unlockAudio);
-
+    const tableBody = document.querySelector("#hits-body");
+    const soundUrl = "https://www.allbyjohn.com/sounds/mturkscanner/lessthan15Short.mp3";
     let knownIds = new Set();
 
-    // --- Load Google Sheet into lookup map ---
-    const SHEET_CSV_URL =
-      "https://docs.google.com/spreadsheets/d/1oyR6URA8qOmg6Zo90Df4w1h5lckOmjVC_9JrE-AXouM/export?format=csv&gid=0";
-
-    let workerMap = {}; // { workerId → { user, host, username } }
-
-    async function loadWorkerMap() {
-      try {
-        const res = await fetch(SHEET_CSV_URL);
-        const text = await res.text();
-        const rows = text.split("\n").map(r => r.split(",").map(c => c.trim()));
-        const header = rows[0].map(h => h.toLowerCase());
-
-        const idIndex = header.indexOf("workerid");
-        const userIndex = header.indexOf("user");
-        const hostIndex = header.indexOf("host");
-        const usernameIndex = header.indexOf("username");
-
-        for (let i = 1; i < rows.length; i++) {
-          const row = rows[i];
-          if (row[idIndex]) {
-            workerMap[row[idIndex]] = {
-              user: row[userIndex] || "-",
-              host: row[hostIndex] || "",
-              username: row[usernameIndex] || ""
-            };
-          }
-        }
-        console.log("✅ Worker map loaded:", workerMap);
-      } catch (err) {
-        console.error("Failed to load worker map:", err);
-      }
+    function playSound() {
+      const audio = new Audio(soundUrl);
+      audio.volume = 0.7;
+      audio.play().catch(e => console.warn("⚠️ Autoplay blocked:", e));
     }
-    await loadWorkerMap();
 
-    function buildTable(hits) {
-      if (!hits.length) {
-        tableContainer.innerHTML = "<p>No HITs in queue</p>";
-        return;
-      }
-
-      let html = `
-        <table>
-          <thead>
-            <tr>
-              <th>User</th>
-              <th>Worker ID</th>
-              <th>Requester</th>
-              <th>Title</th>
-              <th>Reward</th>
-              <th>Accepted At</th>
-            </tr>
-          </thead>
-          <tbody>
-      `;
-
-      for (const hit of hits) {
-        const info = workerMap[hit.workerId] || {};
-        const user = info.user || "-";
-        const host = info.host || "";
-        const username = info.username || "";
-
-        // Construct RDP link
-        let workerCell = hit.workerId;
-        if (host && username) {
-          const rdpUrl = `rdp://full address=s:${host}:3389&username=s:${username}`;
-          workerCell = `<a class="rdp-link" href="${rdpUrl}">${hit.workerId}</a>`;
-        }
-
-        let formattedReward = "-";
-        if (hit.reward) {
-          if (typeof hit.reward === "string" && hit.reward.trim().startsWith("$")) {
-            formattedReward = hit.reward.trim();
-          } else {
-            const num = Number(hit.reward);
-            formattedReward = isNaN(num) ? "-" : `$${num.toFixed(2)}`;
-          }
-        }
-
-        html += `
-          <tr>
-            <td>${user}</td>
-            <td>${workerCell}</td>
-            <td>${hit.requester}</td>
-            <td>${hit.title}</td>
-            <td>${formattedReward}</td>
-            <td>${new Date(hit.acceptedAt).toLocaleString()}</td>
-          </tr>
+    function renderTable(hits) {
+      tableBody.innerHTML = "";
+      hits.sort((a, b) => new Date(b.acceptedAt) - new Date(a.acceptedAt));
+      for (const h of hits) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td>${h.user || "-"}</td>
+          <td>${h.workerId || "-"}</td>
+          <td>${h.requester || "-"}</td>
+          <td>${h.title || "-"}</td>
+          <td>${h.reward || 0}</td>
+          <td>${h.acceptedAt ? new Date(h.acceptedAt).toLocaleString() : "-"}</td>
         `;
+        tableBody.appendChild(tr);
       }
-
-      html += "</tbody></table>";
-      tableContainer.innerHTML = html;
     }
 
-    onSnapshot(hitsRef, (snapshot) => {
+    // --- Real-time Firestore updates ---
+    onSnapshot(collection(db, "hits"), (snapshot) => {
       const hits = [];
       const newIds = new Set();
 
       snapshot.forEach(doc => {
         const data = doc.data();
         hits.push(data);
-        if (data.assignmentId) {
-          newIds.add(data.assignmentId);
-        }
+        newIds.add(data.assignmentId);
       });
 
-      const added = [...newIds].filter(id => !knownIds.has(id));
-      if (added.length > 0) {
-        notificationSound.currentTime = 0;
-        notificationSound.play().catch(() => {});
+      // detect new additions
+      if (knownIds.size > 0) {
+        const added = Array.from(newIds).filter(id => !knownIds.has(id));
+        if (added.length > 0) playSound();
       }
 
       knownIds = newIds;
-      buildTable(hits);
+      renderTable(hits);
+      console.log("✅ Live update:", hits.length, "active HIT(s)");
     });
   </script>
+
+  <style>
+    body {
+      font-family: "Segoe UI", Roboto, sans-serif;
+      background: #f8fafc;
+      color: #111827;
+      padding: 24px;
+    }
+    h1 {
+      text-align: center;
+      color: #0f62fe;
+      margin-bottom: 20px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: white;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    th, td {
+      padding: 10px 12px;
+      border-bottom: 1px solid #e5e7eb;
+      text-align: left;
+    }
+    th {
+      background: #0f62fe;
+      color: white;
+      font-weight: 600;
+    }
+    tr:hover {
+      background: #f1f5f9;
+    }
+    .footer {
+      text-align: center;
+      margin-top: 12px;
+      color: #6b7280;
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+  <h1>🔥 MTurk Accepted HITs (Live Monitor)</h1>
+  <table>
+    <thead>
+      <tr>
+        <th>User</th>
+        <th>Worker ID</th>
+        <th>Requester</th>
+        <th>Title</th>
+        <th>Reward ($)</th>
+        <th>Accepted At</th>
+      </tr>
+    </thead>
+    <tbody id="hits-body"></tbody>
+  </table>
+  <div class="footer">
+    Real-time updates • Plays sound when new HIT arrives
+  </div>
 </body>
 </html>
