@@ -21,6 +21,45 @@
 
     const app = initializeApp(firebaseConfig);
     const db = getFirestore(app);
+ // ----------------------------
+    // Presence (Firestore-only)
+    // ----------------------------
+    const ROOM = "index";                   // a single room for this page
+    const HEARTBEAT_MS = 60_000;            // write once per minute
+    const STALE_MS     = 90_000;            // consider offline if >90s inactive
+
+    const onlineEl = document.querySelector("#onlineCount");
+    const presenceCol = collection(db, `rooms/${ROOM}/presence`);
+    const sid = (crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2));
+    const meRef = doc(presenceCol, sid);
+
+    async function startPresence() {
+      // create / refresh my presence doc
+      setDoc(meRef, { since: serverTimestamp(), lastActive: serverTimestamp() }, { merge: true }).catch(()=>{});
+      // heartbeat
+      const hb = setInterval(() => {
+        setDoc(meRef, { lastActive: serverTimestamp() }, { merge: true }).catch(()=>{});
+      }, HEARTBEAT_MS);
+
+      // clean up on unload (best effort)
+      window.addEventListener("beforeunload", () => {
+        clearInterval(hb);
+        deleteDoc(meRef).catch(()=>{});
+      });
+
+      // live count of viewers active in last 90s
+      onSnapshot(presenceCol, (snap) => {
+        const now = Date.now();
+        let count = 0;
+        snap.forEach(d => {
+          const t = d.data()?.lastActive;
+          const ms = t?.toMillis?.() ?? (t ? Date.parse(t) : 0);
+          if (ms && (now - ms) <= STALE_MS) count++;
+        });
+        if (onlineEl) onlineEl.textContent = `${count} online`;
+      });
+    }
+    startPresence();
 
     const tableBody = document.querySelector("#hits-body");
     const soundUrl = "https://www.allbyjohn.com/sounds/mturkscanner/lessthan15Short.mp3";
