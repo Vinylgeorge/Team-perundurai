@@ -1,188 +1,8 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <span id="onlineCount" style="margin-left:8px;color:#6b7280">0 online</span>
   <meta charset="UTF-8">
   <title>🔥 MTurk Accepted HITs – Live</title>
-
-  <script type="module">
-    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-    import {
-      getFirestore, collection, onSnapshot,
-      doc, setDoc, deleteDoc, serverTimestamp
-    } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
-    // --- Firebase Config ---
-    const firebaseConfig = {
-      apiKey: "AIzaSyC57W83XkxdvM2aMQK8GIRYR2SJH1ORdfQ",
-      authDomain: "mturk-tasks-72994.firebaseapp.com",
-      projectId: "mturk-tasks-72994",
-      storageBucket: "mturk-tasks-72994.firebasestorage.app",
-      messagingSenderId: "305467873275",
-      appId: "1:305467873275:web:7b96048865c5305df1dd5e"
-    };
-
-    const app = initializeApp(firebaseConfig);
-    const db = getFirestore(app);
- // ----------------------------
-    // Presence (Firestore-only)
-    // ----------------------------
-    const ROOM = "index";                   // a single room for this page
-    const HEARTBEAT_MS = 60_000;            // write once per minute
-    const STALE_MS     = 90_000;            // consider offline if >90s inactive
-
-    const onlineEl = document.querySelector("#onlineCount");
-    const presenceCol = collection(db, `rooms/${ROOM}/presence`);
-    const sid = (crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2));
-    const meRef = doc(presenceCol, sid);
-
-    async function startPresence() {
-      // create / refresh my presence doc
-      setDoc(meRef, { since: serverTimestamp(), lastActive: serverTimestamp() }, { merge: true }).catch(()=>{});
-      // heartbeat
-      const hb = setInterval(() => {
-        setDoc(meRef, { lastActive: serverTimestamp() }, { merge: true }).catch(()=>{});
-      }, HEARTBEAT_MS);
-
-      // clean up on unload (best effort)
-      window.addEventListener("beforeunload", () => {
-        clearInterval(hb);
-        deleteDoc(meRef).catch(()=>{});
-      });
-
-      // live count of viewers active in last 90s
-      onSnapshot(presenceCol, (snap) => {
-        const now = Date.now();
-        let count = 0;
-        snap.forEach(d => {
-          const t = d.data()?.lastActive;
-          const ms = t?.toMillis?.() ?? (t ? Date.parse(t) : 0);
-          if (ms && (now - ms) <= STALE_MS) count++;
-        });
-        if (onlineEl) onlineEl.textContent = `${count} online`;
-      });
-    }
-    startPresence();
-
-    const tableBody = document.querySelector("#hits-body");
-    const soundUrl = "https://www.allbyjohn.com/sounds/mturkscanner/lessthan15Short.mp3";
-    let knownIds = new Set();
-
-    function playSound() {
-      const audio = new Audio(soundUrl);
-      audio.volume = 0.7;
-      audio.play().catch(e => console.warn("⚠️ Autoplay blocked:", e));
-    }
-
-    function renderTable(hits) {
-      tableBody.innerHTML = "";
-      hits.sort((a, b) => new Date(b.acceptedAt) - new Date(a.acceptedAt));
-      for (const h of hits) {
-        const tr = document.createElement("tr");
-        tr.innerHTML = `
-          <td>${h.user || "-"}</td>
-          <td>${h.workerId || "-"}</td>
-          <td>${h.requester || "-"}</td>
-          <td>${h.title || "-"}</td>
-          <td>${h.reward || 0}</td>
-          <td>${h.acceptedAt ? new Date(h.acceptedAt).toLocaleString() : "-"}</td>
-        `;
-        tableBody.appendChild(tr);
-      }
-    }
-  // ----------------------------
-  // 🔔 Desktop notifications
-  // ----------------------------
-  // Create an "Enable notifications" button (only shown until permission granted)
-  const titlebar = document.querySelector(".titlebar");
-  const notifBtn = document.createElement("button");
-  notifBtn.id = "enableNotif";
-  notifBtn.textContent = "Enable notifications";
-  Object.assign(notifBtn.style, {
-    padding: "6px 10px",
-    borderRadius: "999px",
-    border: "1px solid #d1d5db",
-    background: "#ffffff",
-    cursor: "pointer",
-    fontSize: "12px"
-  });
-  if (titlebar) titlebar.appendChild(notifBtn);
-
-  function updateNotifButtonVisibility() {
-    if (!("Notification" in window)) {
-      notifBtn.style.display = "none";
-      return;
-    }
-    notifBtn.style.display = Notification.permission === "granted" ? "none" : "inline-block";
-  }
-  updateNotifButtonVisibility();
-
-  notifBtn.addEventListener("click", async () => {
-    if (!("Notification" in window)) return;
-    try {
-      const perm = await Notification.requestPermission();
-      console.log("Notification permission:", perm);
-    } catch {}
-    updateNotifButtonVisibility();
-  });
-
-  // Prevent repeat toasts: keep a short-term memory of what we’ve alerted
-  const notifiedIds = new Set();
-  function notifyNewHit(h) {
-    if (!("Notification" in window)) return;
-    if (Notification.permission !== "granted") return;
-    if (!h?.assignmentId || notifiedIds.has(h.assignmentId)) return;
-
-    const title = `New HIT • ${h.requester || "Requester"}`;
-    const body  = `${h.title || "Untitled"}\nReward: $${h.reward || 0} • ${h.user || h.workerId || ""}`;
-    const n = new Notification(title, {
-      body,
-      tag: h.assignmentId,   // dedupe hint to the OS
-      renotify: false,
-      silent: true           // keep sound via your audio file
-      // icon: "/favicon.ico" // (optional) add your icon path
-    });
-    n.onclick = () => {
-      window.focus();
-      try { n.close(); } catch {}
-    };
-
-    // expire our local dedupe after 2 minutes
-    notifiedIds.add(h.assignmentId);
-    setTimeout(() => notifiedIds.delete(h.assignmentId), 120_000);
-    setTimeout(() => { try { n.close(); } catch {} }, 8000);
-  }
-
-    // --- Real-time Firestore updates ---
-    onSnapshot(collection(db, "hits"), (snapshot) => {
-      const hits = [];
-      const newIds = new Set();
-
-      snapshot.forEach(doc => {
-        const data = doc.data();
-        hits.push(data);
-        newIds.add(data.assignmentId);
-      });
-
-      // detect new additions
-      if (knownIds.size > 0) {
-  const added = Array.from(newIds).filter(id => !knownIds.has(id));
-  if (added.length > 0) {
-    playSound();
-    // 🔔 Show a desktop notification for each new HIT
-    snapshot.forEach(docSnap => {
-      const data = docSnap.data();
-      if (added.includes(data.assignmentId)) notifyNewHit(data);
-    });
-  }
-}
-
-
-      knownIds = newIds;
-      renderTable(hits);
-      console.log("✅ Live update:", hits.length, "active HIT(s)");
-    });
-  </script>
-
   <style>
     body {
       font-family: "Segoe UI", Roboto, sans-serif;
@@ -194,6 +14,13 @@
       text-align: center;
       color: #0f62fe;
       margin-bottom: 20px;
+    }
+    #onlineCount {
+      display: block;
+      text-align: center;
+      margin-bottom: 10px;
+      color: #6b7280;
+      font-size: 14px;
     }
     table {
       width: 100%;
@@ -222,10 +49,23 @@
       color: #6b7280;
       font-size: 13px;
     }
+    #enableNotif {
+      display: block;
+      margin: 0 auto 16px auto;
+      padding: 6px 10px;
+      border-radius: 999px;
+      border: 1px solid #d1d5db;
+      background: #ffffff;
+      cursor: pointer;
+      font-size: 12px;
+    }
   </style>
 </head>
 <body>
   <h1>🔥 MTurk Accepted HITs (Live Monitor)</h1>
+  <span id="onlineCount">0 online</span>
+  <button id="enableNotif">Enable notifications</button>
+
   <table>
     <thead>
       <tr>
@@ -239,8 +79,174 @@
     </thead>
     <tbody id="hits-body"></tbody>
   </table>
+
   <div class="footer">
-    Real-time updates • Plays sound when new HIT arrives
+    Real-time updates • Plays sound & shows desktop notifications when new HIT arrives
   </div>
+
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+    import {
+      getFirestore, collection, onSnapshot,
+      doc, setDoc, deleteDoc, serverTimestamp
+    } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+    // --- Firebase Config ---
+    const firebaseConfig = {
+      apiKey: "AIzaSyC57W83XkxdvM2aMQK8GIRYR2SJH1ORdfQ",
+      authDomain: "mturk-tasks-72994.firebaseapp.com",
+      projectId: "mturk-tasks-72994",
+      storageBucket: "mturk-tasks-72994.firebasestorage.app",
+      messagingSenderId: "305467873275",
+      appId: "1:305467873275:web:7b96048865c5305df1dd5e"
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const db = getFirestore(app);
+
+    // ----------------------------
+    // Presence tracker
+    // ----------------------------
+    const ROOM = "index";
+    const HEARTBEAT_MS = 60_000;
+    const STALE_MS = 90_000;
+    const onlineEl = document.querySelector("#onlineCount");
+    const presenceCol = collection(db, `rooms/${ROOM}/presence`);
+    const sid = crypto.randomUUID?.() ?? Math.random().toString(36).slice(2);
+    const meRef = doc(presenceCol, sid);
+
+    async function startPresence() {
+      setDoc(meRef, { since: serverTimestamp(), lastActive: serverTimestamp() }, { merge: true }).catch(()=>{});
+      const hb = setInterval(() => {
+        setDoc(meRef, { lastActive: serverTimestamp() }, { merge: true }).catch(()=>{});
+      }, HEARTBEAT_MS);
+
+      window.addEventListener("beforeunload", () => {
+        clearInterval(hb);
+        deleteDoc(meRef).catch(()=>{});
+      });
+
+      onSnapshot(presenceCol, (snap) => {
+        const now = Date.now();
+        let count = 0;
+        snap.forEach(d => {
+          const t = d.data()?.lastActive;
+          const ms = t?.toMillis?.() ?? (t ? Date.parse(t) : 0);
+          if (ms && (now - ms) <= STALE_MS) count++;
+        });
+        onlineEl.textContent = `${count} online`;
+      });
+    }
+    startPresence();
+
+    // ----------------------------
+    // HITs live listener + sound
+    // ----------------------------
+    const tableBody = document.querySelector("#hits-body");
+    const soundUrl = "https://www.allbyjohn.com/sounds/mturkscanner/lessthan15Short.mp3";
+    let knownIds = new Set();
+
+    function playSound() {
+      const audio = new Audio(soundUrl);
+      audio.volume = 0.7;
+      audio.play().catch(e => console.warn("⚠️ Autoplay blocked:", e));
+    }
+
+    function renderTable(hits) {
+      tableBody.innerHTML = "";
+      hits.sort((a, b) => new Date(b.acceptedAt) - new Date(a.acceptedAt));
+      for (const h of hits) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td>${h.user || "-"}</td>
+          <td>${h.workerId || "-"}</td>
+          <td>${h.requester || "-"}</td>
+          <td>${h.title || "-"}</td>
+          <td>${h.reward || 0}</td>
+          <td>${h.acceptedAt ? new Date(h.acceptedAt).toLocaleString() : "-"}</td>
+        `;
+        tableBody.appendChild(tr);
+      }
+    }
+
+    // ----------------------------
+    // 🔔 Desktop Notifications
+    // ----------------------------
+    const notifBtn = document.getElementById("enableNotif");
+
+    function updateNotifButton() {
+      if (!("Notification" in window)) {
+        notifBtn.style.display = "none";
+        return;
+      }
+      notifBtn.style.display = Notification.permission === "granted" ? "none" : "inline-block";
+    }
+
+    notifBtn.addEventListener("click", async () => {
+      if (!("Notification" in window)) return;
+      try {
+        await Notification.requestPermission();
+      } catch {}
+      updateNotifButton();
+    });
+    updateNotifButton();
+
+    const notifiedIds = new Set();
+    function notifyNewHit(h) {
+      if (!("Notification" in window)) return;
+      if (Notification.permission !== "granted") return;
+      if (!h?.assignmentId || notifiedIds.has(h.assignmentId)) return;
+
+      const title = `New HIT • ${h.requester || "Requester"}`;
+      const body  = `${h.title || "Untitled"}\nReward: $${h.reward || 0} • ${h.user || h.workerId || ""}`;
+      const n = new Notification(title, {
+        body,
+        tag: h.assignmentId,
+        renotify: false,
+        silent: true
+      });
+      n.onclick = () => {
+        window.focus();
+        try { n.close(); } catch {}
+      };
+      notifiedIds.add(h.assignmentId);
+      setTimeout(() => notifiedIds.delete(h.assignmentId), 120_000);
+      setTimeout(() => { try { n.close(); } catch {} }, 8000);
+    }
+
+    // ----------------------------
+    // Firestore Real-time Updates
+    // ----------------------------
+    onSnapshot(collection(db, "hits"), (snapshot) => {
+      const hits = [];
+      const newIds = new Set();
+      const hitsById = new Map();
+
+      snapshot.forEach(docSnap => {
+        const data = docSnap.data();
+        hits.push(data);
+        if (data.assignmentId) {
+          newIds.add(data.assignmentId);
+          hitsById.set(data.assignmentId, data);
+        }
+      });
+
+      // Detect and alert new hits
+      if (knownIds.size > 0) {
+        const added = Array.from(newIds).filter(id => !knownIds.has(id));
+        if (added.length > 0) {
+          playSound();
+          for (const id of added) {
+            const h = hitsById.get(id);
+            if (h) notifyNewHit(h);
+          }
+        }
+      }
+
+      knownIds = newIds;
+      renderTable(hits);
+      console.log("✅ Live update:", hits.length, "active HIT(s)");
+    });
+  </script>
 </body>
 </html>
