@@ -165,9 +165,17 @@
 
       // detect new additions
       if (knownIds.size > 0) {
-        const added = Array.from(newIds).filter(id => !knownIds.has(id));
-        if (added.length > 0) playSound();
-      }
+  const added = Array.from(newIds).filter(id => !knownIds.has(id));
+  if (added.length > 0) {
+    playSound();
+    // 🔔 Show a desktop notification for each new HIT
+    snapshot.forEach(docSnap => {
+      const data = docSnap.data();
+      if (added.includes(data.assignmentId)) notifyNewHit(data);
+    });
+  }
+}
+
 
       knownIds = newIds;
       renderTable(hits);
