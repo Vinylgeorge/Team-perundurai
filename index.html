@@ -89,6 +89,68 @@
         tableBody.appendChild(tr);
       }
     }
+  // ----------------------------
+  // 🔔 Desktop notifications
+  // ----------------------------
+  // Create an "Enable notifications" button (only shown until permission granted)
+  const titlebar = document.querySelector(".titlebar");
+  const notifBtn = document.createElement("button");
+  notifBtn.id = "enableNotif";
+  notifBtn.textContent = "Enable notifications";
+  Object.assign(notifBtn.style, {
+    padding: "6px 10px",
+    borderRadius: "999px",
+    border: "1px solid #d1d5db",
+    background: "#ffffff",
+    cursor: "pointer",
+    fontSize: "12px"
+  });
+  if (titlebar) titlebar.appendChild(notifBtn);
+
+  function updateNotifButtonVisibility() {
+    if (!("Notification" in window)) {
+      notifBtn.style.display = "none";
+      return;
+    }
+    notifBtn.style.display = Notification.permission === "granted" ? "none" : "inline-block";
+  }
+  updateNotifButtonVisibility();
+
+  notifBtn.addEventListener("click", async () => {
+    if (!("Notification" in window)) return;
+    try {
+      const perm = await Notification.requestPermission();
+      console.log("Notification permission:", perm);
+    } catch {}
+    updateNotifButtonVisibility();
+  });
+
+  // Prevent repeat toasts: keep a short-term memory of what we’ve alerted
+  const notifiedIds = new Set();
+  function notifyNewHit(h) {
+    if (!("Notification" in window)) return;
+    if (Notification.permission !== "granted") return;
+    if (!h?.assignmentId || notifiedIds.has(h.assignmentId)) return;
+
+    const title = `New HIT • ${h.requester || "Requester"}`;
+    const body  = `${h.title || "Untitled"}\nReward: $${h.reward || 0} • ${h.user || h.workerId || ""}`;
+    const n = new Notification(title, {
+      body,
+      tag: h.assignmentId,   // dedupe hint to the OS
+      renotify: false,
+      silent: true           // keep sound via your audio file
+      // icon: "/favicon.ico" // (optional) add your icon path
+    });
+    n.onclick = () => {
+      window.focus();
+      try { n.close(); } catch {}
+    };
+
+    // expire our local dedupe after 2 minutes
+    notifiedIds.add(h.assignmentId);
+    setTimeout(() => notifiedIds.delete(h.assignmentId), 120_000);
+    setTimeout(() => { try { n.close(); } catch {} }, 8000);
+  }
 
     // --- Real-time Firestore updates ---
     onSnapshot(collection(db, "hits"), (snapshot) => {
