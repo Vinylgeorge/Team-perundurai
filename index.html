@@ -1,139 +1,91 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <title>🔥 MTurk Accepted HITs – Live Monitor</title>
-  <style>
-    body {
-      font-family: "Segoe UI", Roboto, sans-serif;
-      background: #f8fafc;
-      color: #111827;
-      padding: 24px;
-    }
-    header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 20px;
-    }
-    h1 {
-      color: #0f62fe;
-      margin: 0;
-    }
-    #raiseTicketBtn {
-      background: #dc2626;
-      color: #fff;
-      border: none;
-      border-radius: 8px;
-      padding: 8px 14px;
-      font-weight: bold;
-      cursor: pointer;
-    }
-    #raiseTicketBtn:hover { background: #b91c1c; }
-    #onlineCount {
-      display: block;
-      text-align: center;
-      margin-bottom: 10px;
-      color: #6b7280;
-      font-size: 14px;
-    }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      background: white;
-      box-shadow: 0 2px 6px rgba(0,0,0,0.1);
-      border-radius: 8px;
-      overflow: hidden;
-    }
-    th, td {
-      padding: 10px 12px;
-      border-bottom: 1px solid #e5e7eb;
-      text-align: left;
-    }
-    th {
-      background: #0f62fe;
-      color: white;
-      font-weight: 600;
-    }
-    tr:hover { background: #f1f5f9; }
-    .footer {
-      text-align: center;
-      margin-top: 12px;
-      color: #6b7280;
-      font-size: 13px;
-    }
-    #enableNotif {
-      display: block;
-      margin: 0 auto 16px auto;
-      padding: 6px 10px;
-      border-radius: 999px;
-      border: 1px solid #d1d5db;
-      background: #ffffff;
-      cursor: pointer;
-      font-size: 12px;
-    }
-    /* Ticket Modal */
-    #ticketModal {
-      display: none;
-      position: fixed;
-      top: 0; left: 0;
-      width: 100%; height: 100%;
-      background: rgba(0,0,0,0.7);
-      align-items: center;
-      justify-content: center;
-      z-index: 9999;
-    }
-    .modal-content {
-      background: white;
-      border-radius: 10px;
-      padding: 20px;
-      width: 90%;
-      max-width: 420px;
-    }
-    .modal-content h2 {
-      text-align: center;
-      color: #dc2626;
-      margin-top: 0;
-    }
-    input, textarea {
-      width: 100%;
-      margin: 6px 0;
-      padding: 8px;
-      border: 1px solid #d1d5db;
-      border-radius: 6px;
-    }
-    button.submit {
-      background: #2563eb;
-      color: white;
-      border: none;
-      padding: 8px 12px;
-      border-radius: 6px;
-      cursor: pointer;
-      width: 100%;
-    }
-    button.submit:hover { background: #1e40af; }
-    button.close {
-      background: #111827;
-      color: white;
-      border: none;
-      border-radius: 4px;
-      padding: 6px 10px;
-      margin-top: 10px;
-      cursor: pointer;
-      width: 100%;
-    }
-    #recordBtn {
-      background: #16a34a;
-      color: white;
-      border: none;
-      border-radius: 6px;
-      padding: 6px 12px;
-      cursor: pointer;
-      width: 100%;
-      margin: 5px 0;
-    }
-    #recordBtn.recording { background: #b91c1c; }
-  </style>
+<meta charset="UTF-8">
+<title>🔥 MTurk Accepted HITs – Live Monitor</title>
+<style>
+  body {
+    font-family: "Segoe UI", Roboto, sans-serif;
+    background: #f8fafc;
+    color: #111827;
+    padding: 24px;
+  }
+  header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+  }
+  h1 { color: #0f62fe; margin: 0; }
+  #raiseTicketBtn {
+    background: #dc2626; color: #fff; font-weight: bold;
+    border: none; border-radius: 8px; padding: 8px 14px;
+    cursor: pointer;
+  }
+  #raiseTicketBtn:hover { background: #b91c1c; }
+  #onlineCount {
+    display: block; text-align: center; color: #6b7280;
+    margin-bottom: 12px; font-size: 14px;
+  }
+  #enableNotif {
+    display: block; margin: 0 auto 20px auto;
+    padding: 6px 10px; border-radius: 999px;
+    border: 1px solid #d1d5db; background: #ffffff;
+    cursor: pointer; font-size: 12px;
+  }
+  table {
+    width: 100%; border-collapse: collapse; background: white;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.1); border-radius: 8px;
+    overflow: hidden;
+  }
+  th, td {
+    padding: 10px 12px; border-bottom: 1px solid #e5e7eb;
+    text-align: left;
+  }
+  th {
+    background: #0f62fe; color: white; font-weight: 600;
+  }
+  tr:hover { background: #f1f5f9; }
+  .footer {
+    text-align: center; margin-top: 12px; color: #6b7280;
+    font-size: 13px;
+  }
+  /* Ticket Modal */
+  #ticketModal {
+    display: none; position: fixed; top: 0; left: 0;
+    width: 100%; height: 100%; background: rgba(0,0,0,0.7);
+    align-items: center; justify-content: center; z-index: 9999;
+  }
+  .modal-content {
+    background: white; border-radius: 10px; padding: 20px;
+    width: 90%; max-width: 420px;
+  }
+  .modal-content h2 {
+    margin-top: 0; text-align: center; color: #dc2626;
+  }
+  input, textarea {
+    width: 100%; margin: 6px 0; padding: 8px;
+    border: 1px solid #d1d5db; border-radius: 6px;
+  }
+  button.submit {
+    background: #2563eb; color: #fff; border: none;
+    padding: 8px 12px; border-radius: 6px;
+    cursor: pointer; width: 100%;
+  }
+  button.submit:hover { background: #1e40af; }
+  button.close {
+    background: #111827; color: white; border: none;
+    border-radius: 4px; padding: 6px 10px;
+    margin-top: 10px; cursor: pointer; width: 100%;
+  }
+  #recordBtn {
+    background: #16a34a; color: #fff;
+    border: none; border-radius: 6px;
+    padding: 6px 12px; cursor: pointer;
+    width: 100%; margin: 5px 0;
+  }
+  #recordBtn.recording { background: #b91c1c; }
+</style>
 </head>
 <body>
   <header>
@@ -162,7 +114,7 @@
     Real-time updates • Plays sound & shows desktop notifications when new HIT arrives
   </div>
 
-  <!-- Support Ticket Modal -->
+  <!-- Ticket Modal -->
   <div id="ticketModal">
     <div class="modal-content">
       <h2>🎫 Raise Support Ticket</h2>
@@ -187,7 +139,7 @@
       getStorage, ref, uploadBytes, getDownloadURL
     } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-storage.js";
 
-    // --- Firebase Config (your mturk-tasks project) ---
+    // --- Firebase Config (mturk-tasks-72994) ---
     const firebaseConfig = {
       apiKey: "AIzaSyC57W83XkxdvM2aMQK8GIRYR2SJH1ORdfQ",
       authDomain: "mturk-tasks-72994.firebaseapp.com",
@@ -201,7 +153,7 @@
     const db = getFirestore(app);
     const storage = getStorage(app);
 
-    // ------------------ Presence Tracker ------------------
+    // ---------------------------- Presence ----------------------------
     const ROOM = "index";
     const HEARTBEAT_MS = 60_000;
     const STALE_MS = 90_000;
@@ -215,7 +167,12 @@
       const hb = setInterval(() => {
         setDoc(meRef, { lastActive: serverTimestamp() }, { merge: true }).catch(()=>{});
       }, HEARTBEAT_MS);
-      window.addEventListener("beforeunload", () => { clearInterval(hb); deleteDoc(meRef).catch(()=>{}); });
+
+      window.addEventListener("beforeunload", () => {
+        clearInterval(hb);
+        deleteDoc(meRef).catch(()=>{});
+      });
+
       onSnapshot(presenceCol, (snap) => {
         const now = Date.now();
         let count = 0;
@@ -229,131 +186,131 @@
     }
     startPresence();
 
-    // ------------------ HITs Live Listener ------------------
+    // ---------------------------- HITs live listener ----------------------------
     const tableBody = document.querySelector("#hits-body");
     const soundUrl = "https://www.allbyjohn.com/sounds/mturkscanner/lessthan15Short.mp3";
     let knownIds = new Set();
+
     function playSound() {
       const audio = new Audio(soundUrl);
       audio.volume = 0.7;
       audio.play().catch(()=>{});
     }
+
     function renderTable(hits) {
       tableBody.innerHTML = "";
       hits.sort((a,b)=>new Date(b.acceptedAt)-new Date(a.acceptedAt));
-      for (const h of hits) {
-        const tr = document.createElement("tr");
-        tr.innerHTML = `
-          <td>${h.user || "-"}</td>
-          <td>${h.workerId || "-"}</td>
-          <td>${h.requester || "-"}</td>
-          <td>${h.title || "-"}</td>
-          <td>${h.reward || 0}</td>
-          <td>${h.acceptedAt ? new Date(h.acceptedAt).toLocaleString() : "-"}</td>`;
+      for(const h of hits){
+        const tr=document.createElement("tr");
+        tr.innerHTML=`
+          <td>${h.user||"-"}</td>
+          <td>${h.workerId||"-"}</td>
+          <td>${h.requester||"-"}</td>
+          <td>${h.title||"-"}</td>
+          <td>${h.reward||0}</td>
+          <td>${h.acceptedAt?new Date(h.acceptedAt).toLocaleString():"-"}</td>`;
         tableBody.appendChild(tr);
       }
     }
 
-    // ------------------ Notifications ------------------
-    const notifBtn = document.getElementById("enableNotif");
-    function updateNotifButton() {
-      if (!("Notification" in window)) { notifBtn.style.display = "none"; return; }
-      notifBtn.style.display = Notification.permission === "granted" ? "none" : "inline-block";
+    // ---------------------------- Notifications ----------------------------
+    const notifBtn=document.getElementById("enableNotif");
+    function updateNotifButton(){
+      if(!("Notification"in window)){notifBtn.style.display="none";return;}
+      notifBtn.style.display=Notification.permission==="granted"?"none":"inline-block";
     }
-    notifBtn.addEventListener("click", async () => { await Notification.requestPermission(); updateNotifButton(); });
+    notifBtn.addEventListener("click",async()=>{await Notification.requestPermission();updateNotifButton();});
     updateNotifButton();
-    const notifiedIds = new Set();
-    function notifyNewHit(h) {
-      if (Notification.permission !== "granted") return;
-      if (!h?.assignmentId || notifiedIds.has(h.assignmentId)) return;
-      const title = `New HIT • ${h.requester || "Requester"}`;
-      const body = `${h.title || "Untitled"}\nReward: $${h.reward || 0} • ${h.user || h.workerId || ""}`;
-      const n = new Notification(title, { body, silent: true });
+    const notifiedIds=new Set();
+    function notifyNewHit(h){
+      if(Notification.permission!=="granted")return;
+      if(!h?.assignmentId||notifiedIds.has(h.assignmentId))return;
+      const title=`New HIT • ${h.requester||"Requester"}`;
+      const body=`${h.title||"Untitled"}\nReward: $${h.reward||0} • ${h.user||h.workerId||""}`;
+      const n=new Notification(title,{body,silent:true});
       notifiedIds.add(h.assignmentId);
-      setTimeout(() => notifiedIds.delete(h.assignmentId), 120000);
-      setTimeout(() => { try { n.close(); } catch {} }, 8000);
+      setTimeout(()=>notifiedIds.delete(h.assignmentId),120000);
+      setTimeout(()=>{try{n.close();}catch{}},8000);
     }
 
-    onSnapshot(collection(db, "hits"), (snapshot) => {
-      const hits = [], newIds = new Set(), hitsById = new Map();
-      snapshot.forEach(docSnap => {
-        const data = docSnap.data();
-        hits.push(data);
-        if (data.assignmentId) { newIds.add(data.assignmentId); hitsById.set(data.assignmentId, data); }
+    onSnapshot(collection(db,"hits"),(snapshot)=>{
+      const hits=[],newIds=new Set(),hitsById=new Map();
+      snapshot.forEach(docSnap=>{
+        const data=docSnap.data();hits.push(data);
+        if(data.assignmentId){newIds.add(data.assignmentId);hitsById.set(data.assignmentId,data);}
       });
-      if (knownIds.size > 0) {
-        const added = Array.from(newIds).filter(id => !knownIds.has(id));
-        if (added.length > 0) { playSound(); for (const id of added) { const h = hitsById.get(id); if (h) notifyNewHit(h); } }
+      if(knownIds.size>0){
+        const added=Array.from(newIds).filter(id=>!knownIds.has(id));
+        if(added.length>0){playSound();for(const id of added){const h=hitsById.get(id);if(h)notifyNewHit(h);}}
       }
-      knownIds = newIds; renderTable(hits);
+      knownIds=newIds;renderTable(hits);
     });
 
-    // ------------------ Ticket System ------------------
-    window.openTicketModal = () => document.getElementById("ticketModal").style.display = "flex";
-    window.closeTicketModal = () => document.getElementById("ticketModal").style.display = "none";
+    // ---------------------------- Ticket System ----------------------------
+    window.openTicketModal=()=>document.getElementById("ticketModal").style.display="flex";
+    window.closeTicketModal=()=>document.getElementById("ticketModal").style.display="none";
 
-    const recordBtn = document.getElementById("recordBtn");
-    const previewAudio = document.getElementById("previewAudio");
-    let mediaRecorder, recordedChunks = [], audioBlob = null;
+    const recordBtn=document.getElementById("recordBtn");
+    const previewAudio=document.getElementById("previewAudio");
+    let mediaRecorder, recordedChunks=[], audioBlob=null;
 
-    recordBtn.addEventListener("click", async () => {
-      if (!mediaRecorder || mediaRecorder.state === "inactive") {
-        try {
-          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-          recordedChunks = [];
-          mediaRecorder = new MediaRecorder(stream);
-          mediaRecorder.ondataavailable = e => { if (e.data.size > 0) recordedChunks.push(e.data); };
-          mediaRecorder.onstop = () => {
-            audioBlob = new Blob(recordedChunks, { type: "audio/webm" });
-            previewAudio.src = URL.createObjectURL(audioBlob);
-            previewAudio.style.display = "block";
+    recordBtn.addEventListener("click",async()=>{
+      if(!mediaRecorder||mediaRecorder.state==="inactive"){
+        try{
+          const stream=await navigator.mediaDevices.getUserMedia({audio:true});
+          recordedChunks=[];
+          mediaRecorder=new MediaRecorder(stream);
+          mediaRecorder.ondataavailable=e=>{if(e.data.size>0)recordedChunks.push(e.data);};
+          mediaRecorder.onstop=()=>{
+            audioBlob=new Blob(recordedChunks,{type:"audio/webm"});
+            previewAudio.src=URL.createObjectURL(audioBlob);
+            previewAudio.style.display="block";
           };
           mediaRecorder.start();
-          recordBtn.textContent = "⏹ Stop Recording";
+          recordBtn.textContent="⏹ Stop Recording";
           recordBtn.classList.add("recording");
-        } catch (e) { alert("🎤 Microphone access denied."); }
-      } else {
+        }catch(e){alert("🎤 Microphone access denied.");}
+      }else{
         mediaRecorder.stop();
-        recordBtn.textContent = "🎙 Start Recording";
+        recordBtn.textContent="🎙 Start Recording";
         recordBtn.classList.remove("recording");
       }
     });
 
-    document.getElementById("submitTicket").addEventListener("click", async () => {
-      const userId = document.getElementById("ticketUserId").value.trim();
-      const subject = document.getElementById("ticketSubject").value.trim();
-      const desc = document.getElementById("ticketDesc").value.trim();
-      const fileInput = document.getElementById("ticketFile");
-      if (!userId || !subject) return alert("Please enter your User ID and issue title.");
+    document.getElementById("submitTicket").addEventListener("click",async()=>{
+      const userId=document.getElementById("ticketUserId").value.trim();
+      const subject=document.getElementById("ticketSubject").value.trim();
+      const desc=document.getElementById("ticketDesc").value.trim();
+      const fileInput=document.getElementById("ticketFile");
+      if(!userId||!subject)return alert("Please enter your User ID and issue title.");
 
-      const attachments = [];
-      for (const file of fileInput.files) {
-        const refFile = ref(storage, `support_attachments/${Date.now()}_${file.name}`);
-        await uploadBytes(refFile, file);
+      const attachments=[];
+      for(const file of fileInput.files){
+        const refFile=ref(storage,`support_attachments/${Date.now()}_${file.name}`);
+        await uploadBytes(refFile,file);
         attachments.push(await getDownloadURL(refFile));
       }
 
-      let audioUrl = "";
-      if (audioBlob) {
-        const audioRef = ref(storage, `support_audio/${Date.now()}_${userId}.webm`);
-        await uploadBytes(audioRef, audioBlob);
-        audioUrl = await getDownloadURL(audioRef);
+      let audioUrl="";
+      if(audioBlob){
+        const audioRef=ref(storage,`support_audio/${Date.now()}_${userId}.webm`);
+        await uploadBytes(audioRef,audioBlob);
+        audioUrl=await getDownloadURL(audioRef);
       }
 
-      await addDoc(collection(db, "support_tickets"), {
-        userId, subject, description: desc,
-        attachments, audioUrl, status: "open",
-        createdAt: serverTimestamp()
+      await addDoc(collection(db,"support_tickets"),{
+        userId,subject,description:desc,
+        attachments,audioUrl,status:"open",
+        createdAt:serverTimestamp()
       });
-
       alert("✅ Ticket submitted successfully!");
       closeTicketModal();
-      audioBlob = null;
-      document.getElementById("ticketUserId").value = "";
-      document.getElementById("ticketSubject").value = "";
-      document.getElementById("ticketDesc").value = "";
-      document.getElementById("ticketFile").value = "";
-      previewAudio.style.display = "none";
+      audioBlob=null;
+      document.getElementById("ticketUserId").value="";
+      document.getElementById("ticketSubject").value="";
+      document.getElementById("ticketDesc").value="";
+      document.getElementById("ticketFile").value="";
+      previewAudio.style.display="none";
     });
   </script>
 </body>
