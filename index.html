@@ -1,60 +1,18 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<title>🔥 MTurk Accepted HITs – Live Monitor</title>
-<style>
-  body { font-family: "Segoe UI", Roboto, sans-serif; background: #f8fafc; color: #111827; padding: 24px; }
-  header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
-  h1 { color: #0f62fe; margin: 0; }
-  #raiseTicketBtn { background: #dc2626; color: #fff; font-weight: bold; border: none; border-radius: 8px; padding: 8px 14px; cursor: pointer; }
-  #raiseTicketBtn:hover { background: #b91c1c; }
-  #onlineCount { display: block; text-align: center; color: #6b7280; margin-bottom: 12px; font-size: 14px; }
-  table { width: 100%; border-collapse: collapse; background: white; box-shadow: 0 2px 6px rgba(0,0,0,0.1); border-radius: 8px; overflow: hidden; }
-  th, td { padding: 10px 12px; border-bottom: 1px solid #e5e7eb; text-align: left; }
-  th { background: #0f62fe; color: white; font-weight: 600; }
-  tr:hover { background: #f1f5f9; }
-  #ticketModal { display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.7); align-items:center; justify-content:center; z-index:9999; }
-  .modal-content { background:white; border-radius:10px; padding:20px; width:90%; max-width:420px; }
-  input,textarea{width:100%;margin:6px 0;padding:8px;border:1px solid #d1d5db;border-radius:6px;}
-  #recordBtn{background:#16a34a;color:#fff;border:none;border-radius:6px;padding:6px 12px;cursor:pointer;width:100%;margin:5px 0;}
-  #recordBtn.recording{background:#b91c1c;}
-  button.submit{background:#2563eb;color:#fff;border:none;padding:8px 12px;border-radius:6px;cursor:pointer;width:100%;}
-  button.submit:hover{background:#1e40af;}
-</style>
-</head>
-<body>
-<header>
-  <h1>🔥 MTurk Accepted HITs (Live)</h1>
-  <button id="raiseTicketBtn" onclick="openTicketModal()">🎫 Raise Support Ticket</button>
-</header>
-<span id="onlineCount">0 online</span>
-<table>
-  <thead><tr><th>User</th><th>Worker ID</th><th>Requester</th><th>Title</th><th>Reward</th><th>Accepted At</th></tr></thead>
-  <tbody id="hits-body"></tbody>
-</table>
+  <meta charset="UTF-8">
+  <title>🔥 MTurk Accepted HITs – Live</title>
 
-<!-- Ticket Modal -->
-<div id="ticketModal">
-  <div class="modal-content">
-    <h2>🎫 Raise Support Ticket</h2>
-    <input id="ticketUserId" placeholder="User ID" />
-    <input id="ticketSubject" placeholder="Issue Title" />
-    <textarea id="ticketDesc" rows="3" placeholder="Describe issue..."></textarea>
-    <label>Attach Screenshot(s):</label>
-    <input type="file" id="ticketFile" multiple accept="image/*">
-    <button id="recordBtn">🎙 Start Recording</button>
-    <audio id="previewAudio" controls style="display:none;width:100%;margin-top:8px;"></audio>
-    <button class="submit" id="submitTicket">Submit Ticket</button>
-  </div>
-</div>
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+    import {
+      getFirestore, collection, onSnapshot,
+      doc, setDoc, deleteDoc, serverTimestamp
+    } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
-<script type="module">
-import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-import { getFirestore, collection, onSnapshot, doc, setDoc, deleteDoc, serverTimestamp, addDoc } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
-import { getStorage, ref, uploadBytes, getDownloadURL } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-storage.js";
-
-const firebaseConfig = {
+    // --- Firebase Config ---
+    const firebaseConfig = {
       apiKey: "AIzaSyC57W83XkxdvM2aMQK8GIRYR2SJH1ORdfQ",
       authDomain: "mturk-tasks-72994.firebaseapp.com",
       projectId: "mturk-tasks-72994",
@@ -63,60 +21,242 @@ const firebaseConfig = {
       appId: "1:305467873275:web:7b96048865c5305df1dd5e"
     };
 
-const app = initializeApp(firebaseConfig);
-const db = getFirestore(app);
-const storage = getStorage(app);
+    const app = initializeApp(firebaseConfig);
+    const db  = getFirestore(app);
 
-// HIT live snapshot
-const tableBody = document.querySelector("#hits-body");
-onSnapshot(collection(db,"hits"),(snap)=>{
-  const hits=[];
-  snap.forEach(doc=>hits.push(doc.data()));
-  tableBody.innerHTML="";
-  hits.sort((a,b)=>new Date(b.acceptedAt)-new Date(a.acceptedAt));
-  for(const h of hits){
-    tableBody.innerHTML+=`<tr><td>${h.user||"-"}</td><td>${h.workerId||"-"}</td><td>${h.requester||"-"}</td><td>${h.title||"-"}</td><td>${h.reward||0}</td><td>${h.acceptedAt?new Date(h.acceptedAt).toLocaleString():"-"}</td></tr>`;
-  }
-});
+    // ----------------------------
+    // Presence (who’s online)
+    // ----------------------------
+    const ROOM = "index";
+    const HEARTBEAT_MS = 60_000;
+    const STALE_MS     = 90_000;
 
-// Ticket modal
-window.openTicketModal=()=>document.getElementById("ticketModal").style.display="flex";
-window.closeTicketModal=()=>document.getElementById("ticketModal").style.display="none";
-const recordBtn=document.getElementById("recordBtn");
-const previewAudio=document.getElementById("previewAudio");
-let mediaRecorder,recordedChunks=[],audioBlob=null;
-recordBtn.addEventListener("click",async()=>{
-  if(!mediaRecorder||mediaRecorder.state==="inactive"){
-    try{
-      const stream=await navigator.mediaDevices.getUserMedia({audio:true});
-      recordedChunks=[];mediaRecorder=new MediaRecorder(stream);
-      mediaRecorder.ondataavailable=e=>{if(e.data.size>0)recordedChunks.push(e.data);};
-      mediaRecorder.onstop=()=>{audioBlob=new Blob(recordedChunks,{type:"audio/webm"});previewAudio.src=URL.createObjectURL(audioBlob);previewAudio.style.display="block";};
-      mediaRecorder.start();recordBtn.textContent="⏹ Stop Recording";recordBtn.classList.add("recording");
-    }catch(e){alert("🎤 Microphone access denied.");}
-  }else{mediaRecorder.stop();recordBtn.textContent="🎙 Start Recording";recordBtn.classList.remove("recording");}
-});
-document.getElementById("submitTicket").addEventListener("click",async()=>{
-  const userId=document.getElementById("ticketUserId").value.trim();
-  const subject=document.getElementById("ticketSubject").value.trim();
-  const desc=document.getElementById("ticketDesc").value.trim();
-  if(!userId||!subject)return alert("Please enter User ID and subject");
-  const attachments=[];
-  for(const f of document.getElementById("ticketFile").files){
-    const r=ref(storage,`support_attachments/${Date.now()}_${f.name}`);
-    await uploadBytes(r,f);
-    attachments.push(await getDownloadURL(r));
-  }
-  let audioUrl="";
-  if(audioBlob){
-    const aRef=ref(storage,`support_audio/${Date.now()}_${userId}.webm`);
-    await uploadBytes(aRef,audioBlob);
-    audioUrl=await getDownloadURL(aRef);
-  }
-  await addDoc(collection(db,"support_tickets"),{userId,subject,description:desc,attachments,audioUrl,status:"open",createdAt:serverTimestamp()});
-  alert("✅ Ticket submitted!");
-  closeTicketModal();
-});
-</script>
+    const onlineEl = document.querySelector("#onlineCount");
+    const presenceCol = collection(db, `rooms/${ROOM}/presence`);
+    const sid = crypto.randomUUID?.() ?? Math.random().toString(36).slice(2);
+    const meRef = doc(presenceCol, sid);
+
+    async function startPresence() {
+      setDoc(meRef, { since: serverTimestamp(), lastActive: serverTimestamp() }, { merge: true }).catch(()=>{});
+      const hb = setInterval(() => {
+        setDoc(meRef, { lastActive: serverTimestamp() }, { merge: true }).catch(()=>{});
+      }, HEARTBEAT_MS);
+
+      window.addEventListener("beforeunload", () => {
+        clearInterval(hb);
+        deleteDoc(meRef).catch(()=>{});
+      });
+
+      onSnapshot(presenceCol, (snap) => {
+        const now = Date.now();
+        let count = 0;
+        snap.forEach(d => {
+          const t = d.data()?.lastActive;
+          const ms = t?.toMillis?.() ?? (t ? Date.parse(t) : 0);
+          if (ms && (now - ms) <= STALE_MS) count++;
+        });
+        if (onlineEl) onlineEl.textContent = `${count} online`;
+      });
+    }
+    startPresence();
+
+    // ----------------------------
+    // HITs live listener
+    // ----------------------------
+    const tableBody = document.querySelector("#hits-body");
+    const soundUrl  = "https://www.allbyjohn.com/sounds/mturkscanner/lessthan15Short.mp3";
+    let knownIds = new Set();
+
+    function playSound() {
+      const audio = new Audio(soundUrl);
+      audio.volume = 0.7;
+      audio.play().catch(e => console.warn("⚠️ Autoplay blocked:", e));
+    }
+
+    function renderTable(hits) {
+      tableBody.innerHTML = "";
+      hits.sort((a, b) => new Date(b.acceptedAt) - new Date(a.acceptedAt));
+      for (const h of hits) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td>${h.user || "-"}</td>
+          <td>${h.workerId || "-"}</td>
+          <td>${h.requester || "-"}</td>
+          <td>${h.title || "-"}</td>
+          <td>${h.reward || 0}</td>
+          <td>${h.acceptedAt ? new Date(h.acceptedAt).toLocaleString() : "-"}</td>
+        `;
+        tableBody.appendChild(tr);
+      }
+    }
+
+    // ----------------------------
+    // 🔔 Desktop notifications setup
+    // ----------------------------
+    const titlebar = document.querySelector(".titlebar");
+    const notifBtn = document.createElement("button");
+    notifBtn.id = "enableNotif";
+    notifBtn.textContent = "Enable notifications";
+    Object.assign(notifBtn.style, {
+      padding: "6px 10px",
+      borderRadius: "999px",
+      border: "1px solid #d1d5db",
+      background: "#ffffff",
+      cursor: "pointer",
+      fontSize: "12px"
+    });
+    titlebar.appendChild(notifBtn);
+
+    function updateNotifButtonVisibility() {
+      if (!("Notification" in window)) {
+        notifBtn.style.display = "none";
+        return;
+      }
+      notifBtn.style.display = Notification.permission === "granted" ? "none" : "inline-block";
+    }
+    updateNotifButtonVisibility();
+
+    notifBtn.addEventListener("click", async () => {
+      if (!("Notification" in window)) return;
+      try {
+        await Notification.requestPermission();
+      } catch {}
+      updateNotifButtonVisibility();
+    });
+
+    const notifiedIds = new Set();
+    function notifyNewHit(h) {
+      if (!("Notification" in window)) return;
+      if (Notification.permission !== "granted") return;
+      if (!h?.assignmentId || notifiedIds.has(h.assignmentId)) return;
+
+      const title = `New HIT • ${h.requester || "Requester"}`;
+      const body  = `${h.title || "Untitled"}\nReward: $${h.reward || 0} • ${h.user || h.workerId || ""}`;
+      const n = new Notification(title, {
+        body,
+        tag: h.assignmentId,
+        renotify: false,
+        silent: true
+      });
+      n.onclick = () => { window.focus(); try { n.close(); } catch {}; };
+
+      notifiedIds.add(h.assignmentId);
+      setTimeout(() => notifiedIds.delete(h.assignmentId), 120_000);
+      setTimeout(() => { try { n.close(); } catch {}; }, 8000);
+    }
+
+    // ----------------------------
+    // Real-time Firestore updates
+    // ----------------------------
+    onSnapshot(collection(db, "hits"), (snapshot) => {
+      const hits = [];
+      const newIds = new Set();
+      const hitsById = new Map();
+
+      snapshot.forEach(docSnap => {
+        const data = docSnap.data();
+        hits.push(data);
+        if (data.assignmentId) {
+          newIds.add(data.assignmentId);
+          hitsById.set(data.assignmentId, data);
+        }
+      });
+
+      // detect newly added HITs
+      if (knownIds.size > 0) {
+        const added = Array.from(newIds).filter(id => !knownIds.has(id));
+        if (added.length > 0) {
+          playSound();
+          for (const id of added) {
+            const h = hitsById.get(id);
+            if (h) notifyNewHit(h);
+          }
+        }
+      }
+
+      knownIds = newIds;
+      renderTable(hits);
+      console.log("✅ Live update:", hits.length, "active HIT(s)");
+    });
+  </script>
+
+  <style>
+    body {
+      font-family: "Segoe UI", Roboto, sans-serif;
+      background: #f8fafc;
+      color: #111827;
+      padding: 24px;
+    }
+    .titlebar {
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      gap:10px;
+      margin-bottom:20px;
+    }
+    h1 {
+      color: #0f62fe;
+      margin: 0;
+    }
+    #onlineCount {
+      font-size: 14px;
+      color: #6b7280;
+      background: #eef2ff;
+      border: 1px solid #e5e7eb;
+      border-radius: 999px;
+      padding: 4px 10px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: white;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    th, td {
+      padding: 10px 12px;
+      border-bottom: 1px solid #e5e7eb;
+      text-align: left;
+    }
+    th {
+      background: #0f62fe;
+      color: white;
+      font-weight: 600;
+    }
+    tr:hover {
+      background: #f1f5f9;
+    }
+    .footer {
+      text-align: center;
+      margin-top: 12px;
+      color: #6b7280;
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+  <div class="titlebar">
+    <h1>🔥 MTurk Accepted HITs (Live Monitor)</h1>
+    <span id="onlineCount">0 online</span>
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th>User</th>
+        <th>Worker ID</th>
+        <th>Requester</th>
+        <th>Title</th>
+        <th>Reward ($)</th>
+        <th>Accepted At</th>
+      </tr>
+    </thead>
+    <tbody id="hits-body"></tbody>
+  </table>
+
+  <div class="footer">
+    Real-time updates • Plays sound & shows desktop notifications when new HIT arrives
+  </div>
 </body>
 </html>
