@@ -2,16 +2,18 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>🔥 MTurk Accepted HITs – Live</title>
+  <title>🔥 MTurk Accepted HITs – Live + Earnings (≥ $8 Qualified Users)</title>
 
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
     import {
       getFirestore, collection, onSnapshot,
-      doc, setDoc, deleteDoc, serverTimestamp
+      doc, setDoc, deleteDoc, serverTimestamp, getDocs
     } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
-    // --- Firebase Config ---
+    // =========================
+    // 🔹 Firebase Config – HITs
+    // =========================
     const firebaseConfig = {
       apiKey: "AIzaSyC57W83XkxdvM2aMQK8GIRYR2SJH1ORdfQ",
       authDomain: "mturk-tasks-72994.firebaseapp.com",
@@ -20,13 +22,27 @@
       messagingSenderId: "305467873275",
       appId: "1:305467873275:web:7b96048865c5305df1dd5e"
     };
-
     const app = initializeApp(firebaseConfig);
     const db  = getFirestore(app);
 
-    // ----------------------------
-    // Presence (who’s online)
-    // ----------------------------
+    // =========================
+    // 🔹 Firebase Config – Earnings
+    // =========================
+    import { initializeApp as initEarningsApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+    const earningsConfig = {
+      apiKey: "AIzaSyBTFpM3fs7kWBrZL4yOi9tquUTp1HhH7L8",
+      authDomain: "mturk-monitordeep.firebaseapp.com",
+      projectId: "mturk-monitordeep",
+      storageBucket: "mturk-monitordeep.firebasestorage.app",
+      messagingSenderId: "505786000194",
+      appId: "1:505786000194:web:40b9c9df75d3125f3a99cd"
+    };
+    const earningsApp = initEarningsApp(earningsConfig, "earningsApp");
+    const earningsDB  = getFirestore(earningsApp);
+
+    // =========================
+    // 🟢 Presence Tracking
+    // =========================
     const ROOM = "index";
     const HEARTBEAT_MS = 60_000;
     const STALE_MS     = 90_000;
@@ -60,9 +76,124 @@
     }
     startPresence();
 
-    // ----------------------------
-    // HITs live listener
-    // ----------------------------
+    // =========================
+    // 💰 Earnings (≥ $8) + toggle list
+    // =========================
+    const totalEl = document.createElement("div");
+    totalEl.id = "earningsTotal";
+    totalEl.style.cssText = `
+      font-size:16px;
+      font-weight:bold;
+      text-align:center;
+      margin-bottom:10px;
+    `;
+
+    // table is hidden initially
+    const subTable = document.createElement("table");
+    subTable.id = "qualTable";
+    subTable.style.cssText = `
+      width:60%;
+      margin:0 auto 16px auto;
+      border-collapse:collapse;
+      background:white;
+      border-radius:8px;
+      box-shadow:0 2px 4px rgba(0,0,0,0.1);
+      display:none;
+    `;
+    subTable.innerHTML = `
+      <thead>
+        <tr>
+          <th>User</th>
+          <th>Worker ID</th>
+          <th>Current Earnings ($)</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    `;
+
+    document.addEventListener("DOMContentLoaded", () => {
+      const tb = document.querySelector(".titlebar");
+      tb.after(totalEl);
+      totalEl.after(subTable);
+    });
+
+    // helper: make total text clickable
+    function setTotalText(text) {
+      totalEl.innerHTML = `<a href="#" id="earningsLink" style="color:#15803d;text-decoration:underline;">${text}</a>`;
+      const link = document.querySelector("#earningsLink");
+      if (link) {
+        link.addEventListener("click", (e) => {
+          e.preventDefault();
+          // toggle table
+          subTable.style.display = (subTable.style.display === "none" || subTable.style.display === "") ? "table" : "none";
+        });
+      }
+    }
+
+    async function fetchCSV() {
+      const res = await fetch("https://docs.google.com/spreadsheets/d/1mf2-AQ59CuboAWz8Fle3qXTFfAI3cnB7mrkqQF1lyCw/export?format=csv&gid=0");
+      const text = await res.text();
+      const lines = text.split("\n").map(l => l.trim()).filter(Boolean);
+      const header = lines[0].split(",").map(h => h.trim().toLowerCase());
+      const users = new Set(), workers = new Set();
+      for (let i = 1; i < lines.length; i++) {
+        const cols = lines[i].split(",");
+        const userIdx = header.findIndex(h => h.includes("user"));
+        const workerIdx = header.findIndex(h => h.includes("worker"));
+        if (userIdx >= 0 && cols[userIdx]) users.add(cols[userIdx].trim());
+        if (workerIdx >= 0 && cols[workerIdx]) workers.add(cols[workerIdx].trim());
+      }
+      return { users, workers };
+    }
+
+    async function calcEarnings() {
+      try {
+        const { users, workers } = await fetchCSV();
+        const snap = await getDocs(collection(earningsDB, "earnings_logs"));
+        let total = 0;
+        let qualifying = [];
+        snap.forEach(doc => {
+          const d = doc.data();
+          const user = (d.user || "").trim();
+          const wid = (d.workerId || "").trim();
+          const val = parseFloat(d.currentEarnings) || 0;
+          if ((users.has(user) || workers.has(wid)) && val >= 8) {
+            total += val;
+            qualifying.push({ user, wid, val });
+          }
+        });
+
+        // Update total summary as CLICKABLE link
+        setTotalText(`Total Earnings (≥ $8 Users): $${total.toFixed(2)} (${qualifying.length} qualified)`);
+
+        // Update sub-table rows
+        const tbody = subTable.querySelector("tbody");
+        tbody.innerHTML = "";
+        qualifying
+          .sort((a,b)=>b.val - a.val)
+          .forEach(q=>{
+            const tr = document.createElement("tr");
+            tr.innerHTML = `
+              <td style="padding:6px 8px;border-bottom:1px solid #e5e7eb;">${q.user}</td>
+              <td style="padding:6px 8px;border-bottom:1px solid #e5e7eb;">${q.wid}</td>
+              <td style="padding:6px 8px;border-bottom:1px solid #e5e7eb;color:#15803d;font-weight:600;">${q.val.toFixed(2)}</td>
+            `;
+            tbody.appendChild(tr);
+          });
+
+      } catch (err) {
+        console.error("⚠️ Earnings fetch error:", err);
+        setTotalText("⚠️ Earnings data unavailable");
+      }
+    }
+
+    // initial + refresh
+    setTimeout(calcEarnings, 1500);
+    setInterval(calcEarnings, 5 * 60 * 1000);
+
+    // =========================
+    // 🔔 Notifications & HITs
+    // =========================
     const tableBody = document.querySelector("#hits-body");
     const soundUrl  = "https://www.allbyjohn.com/sounds/mturkscanner/lessthan15Short.mp3";
     let knownIds = new Set();
@@ -90,9 +221,7 @@
       }
     }
 
-    // ----------------------------
-    // 🔔 Desktop notifications setup
-    // ----------------------------
+    // --- Desktop Notifications ---
     const titlebar = document.querySelector(".titlebar");
     const notifBtn = document.createElement("button");
     notifBtn.id = "enableNotif";
@@ -118,9 +247,7 @@
 
     notifBtn.addEventListener("click", async () => {
       if (!("Notification" in window)) return;
-      try {
-        await Notification.requestPermission();
-      } catch {}
+      try { await Notification.requestPermission(); } catch {}
       updateNotifButtonVisibility();
     });
 
@@ -132,12 +259,7 @@
 
       const title = `New HIT • ${h.requester || "Requester"}`;
       const body  = `${h.title || "Untitled"}\nReward: $${h.reward || 0} • ${h.user || h.workerId || ""}`;
-      const n = new Notification(title, {
-        body,
-        tag: h.assignmentId,
-        renotify: false,
-        silent: true
-      });
+      const n = new Notification(title, { body, tag: h.assignmentId, silent: true });
       n.onclick = () => { window.focus(); try { n.close(); } catch {}; };
 
       notifiedIds.add(h.assignmentId);
@@ -145,9 +267,7 @@
       setTimeout(() => { try { n.close(); } catch {}; }, 8000);
     }
 
-    // ----------------------------
-    // Real-time Firestore updates
-    // ----------------------------
+    // --- Firestore live HITs listener ---
     onSnapshot(collection(db, "hits"), (snapshot) => {
       const hits = [];
       const newIds = new Set();
@@ -162,7 +282,6 @@
         }
       });
 
-      // detect newly added HITs
       if (knownIds.size > 0) {
         const added = Array.from(newIds).filter(id => !knownIds.has(id));
         if (added.length > 0) {
@@ -193,6 +312,7 @@
       justify-content:center;
       gap:10px;
       margin-bottom:20px;
+      flex-wrap:wrap;
     }
     h1 {
       color: #0f62fe;
@@ -206,7 +326,7 @@
       border-radius: 999px;
       padding: 4px 10px;
     }
-    table {
+    table.main {
       width: 100%;
       border-collapse: collapse;
       background: white;
@@ -227,6 +347,14 @@
     tr:hover {
       background: #f1f5f9;
     }
+    /* subtable header style */
+    #qualTable thead th {
+      background:#0f62fe;
+      color:white;
+      font-weight:600;
+      text-align:left;
+      padding:6px 8px;
+    }
     .footer {
       text-align: center;
       margin-top: 12px;
@@ -241,7 +369,7 @@
     <span id="onlineCount">0 online</span>
   </div>
 
-  <table>
+  <table class="main">
     <thead>
       <tr>
         <th>User</th>
