@@ -88,11 +88,10 @@
       margin-bottom:10px;
     `;
 
-    // table is hidden initially
     const subTable = document.createElement("table");
     subTable.id = "qualTable";
     subTable.style.cssText = `
-      width:60%;
+      width:70%;
       margin:0 auto 16px auto;
       border-collapse:collapse;
       background:white;
@@ -106,6 +105,7 @@
           <th>User</th>
           <th>Worker ID</th>
           <th>Current Earnings ($)</th>
+          <th>Next Transfer Date</th>
         </tr>
       </thead>
       <tbody></tbody>
@@ -117,14 +117,12 @@
       totalEl.after(subTable);
     });
 
-    // helper: make total text clickable
     function setTotalText(text) {
       totalEl.innerHTML = `<a href="#" id="earningsLink" style="color:#15803d;text-decoration:underline;">${text}</a>`;
       const link = document.querySelector("#earningsLink");
       if (link) {
         link.addEventListener("click", (e) => {
           e.preventDefault();
-          // toggle table
           subTable.style.display = (subTable.style.display === "none" || subTable.style.display === "") ? "table" : "none";
         });
       }
@@ -157,16 +155,15 @@
           const user = (d.user || "").trim();
           const wid = (d.workerId || "").trim();
           const val = parseFloat(d.currentEarnings) || 0;
+          const nextDate = d.nextTransferDate || "—";
           if ((users.has(user) || workers.has(wid)) && val >= 8) {
             total += val;
-            qualifying.push({ user, wid, val });
+            qualifying.push({ user, wid, val, nextDate });
           }
         });
 
-        // Update total summary as CLICKABLE link
         setTotalText(`Total Earnings (≥ $8 Users): $${total.toFixed(2)} (${qualifying.length} qualified)`);
 
-        // Update sub-table rows
         const tbody = subTable.querySelector("tbody");
         tbody.innerHTML = "";
         qualifying
@@ -177,6 +174,7 @@
               <td style="padding:6px 8px;border-bottom:1px solid #e5e7eb;">${q.user}</td>
               <td style="padding:6px 8px;border-bottom:1px solid #e5e7eb;">${q.wid}</td>
               <td style="padding:6px 8px;border-bottom:1px solid #e5e7eb;color:#15803d;font-weight:600;">${q.val.toFixed(2)}</td>
+              <td style="padding:6px 8px;border-bottom:1px solid #e5e7eb;">${q.nextDate}</td>
             `;
             tbody.appendChild(tr);
           });
@@ -187,7 +185,6 @@
       }
     }
 
-    // initial + refresh
     setTimeout(calcEarnings, 1500);
     setInterval(calcEarnings, 5 * 60 * 1000);
 
@@ -221,7 +218,6 @@
       }
     }
 
-    // --- Desktop Notifications ---
     const titlebar = document.querySelector(".titlebar");
     const notifBtn = document.createElement("button");
     notifBtn.id = "enableNotif";
@@ -267,7 +263,6 @@
       setTimeout(() => { try { n.close(); } catch {}; }, 8000);
     }
 
-    // --- Firestore live HITs listener ---
     onSnapshot(collection(db, "hits"), (snapshot) => {
       const hits = [];
       const newIds = new Set();
@@ -347,7 +342,6 @@
     tr:hover {
       background: #f1f5f9;
     }
-    /* subtable header style */
     #qualTable thead th {
       background:#0f62fe;
       color:white;
