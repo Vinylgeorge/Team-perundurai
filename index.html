@@ -26,7 +26,7 @@
     const db  = getFirestore(app);
 
     // =========================
-    // 🔹 Firebase Config – Earnings
+    // 🔹 Firebase Config – Earnings DB
     // =========================
     import { initializeApp as initEarningsApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
     const earningsConfig = {
@@ -41,11 +41,11 @@
     const earningsDB  = getFirestore(earningsApp);
 
     // =========================
-    // 🟢 Presence Tracking
+    // 🟢 Presence
     // =========================
     const ROOM = "index";
-    const HEARTBEAT_MS = 60_000;
-    const STALE_MS     = 90_000;
+    const HEARTBEAT_MS = 60000;
+    const STALE_MS     = 90000;
 
     const onlineEl = document.querySelector("#onlineCount");
     const presenceCol = collection(db, `rooms/${ROOM}/presence`);
@@ -71,13 +71,13 @@
           const ms = t?.toMillis?.() ?? (t ? Date.parse(t) : 0);
           if (ms && (now - ms) <= STALE_MS) count++;
         });
-        if (onlineEl) onlineEl.textContent = `${count} online`;
+        onlineEl.textContent = `${count} online`;
       });
     }
     startPresence();
 
     // =========================
-    // 💰 Earnings + Status + Sorting
+    // 💰 Earnings + Transfer Logic
     // =========================
     const totalEl = document.createElement("div");
     totalEl.id = "earningsTotal";
@@ -91,7 +91,7 @@
     const subTable = document.createElement("table");
     subTable.id = "qualTable";
     subTable.style.cssText = `
-      width:90%;
+      width:95%;
       margin:0 auto 16px auto;
       border-collapse:collapse;
       background:white;
@@ -121,12 +121,10 @@
     function setTotalText(text) {
       totalEl.innerHTML = `<a href="#" id="earningsLink" style="color:#15803d;text-decoration:underline;">${text}</a>`;
       const link = document.querySelector("#earningsLink");
-      if (link) {
-        link.addEventListener("click", (e) => {
-          e.preventDefault();
-          subTable.style.display = (subTable.style.display === "none" || subTable.style.display === "") ? "table" : "none";
-        });
-      }
+      link.addEventListener("click", e => {
+        e.preventDefault();
+        subTable.style.display = subTable.style.display === "none" ? "table" : "none";
+      });
     }
 
     async function fetchCSV() {
@@ -134,7 +132,9 @@
       const text = await res.text();
       const lines = text.split("\n").map(l => l.trim()).filter(Boolean);
       const header = lines[0].split(",").map(h => h.trim().toLowerCase());
+      
       const users = new Set(), workers = new Set();
+
       for (let i = 1; i < lines.length; i++) {
         const cols = lines[i].split(",");
         const userIdx = header.findIndex(h => h.includes("user"));
@@ -142,6 +142,7 @@
         if (userIdx >= 0 && cols[userIdx]) users.add(cols[userIdx].trim());
         if (workerIdx >= 0 && cols[workerIdx]) workers.add(cols[workerIdx].trim());
       }
+
       return { users, workers };
     }
 
@@ -153,41 +154,76 @@
         let total = 0;
         let qualifying = [];
 
-        snap.forEach(docSnap => {
-          const d = docSnap.data();
-          const val = parseFloat(d.currentEarnings) || 0;
-          const user = (d.user || "").trim();
-          const wid = (d.workerId || "").trim();
-          const nextDate = d.nextTransferDate || "—";
+        for (const docSnap of snap.docs) {
+          const data = docSnap.data();
+          const id = docSnap.id;
 
-          if ((users.has(user) || workers.has(wid)) && val >= 8) {
-            const status = (nextDate !== "—") ? "Transferred" : "Active";
-            total += val;
-            qualifying.push({ user, wid, val, nextDate, status });
+          const user = (data.user || "").trim();
+          const wid = (data.workerId || "").trim();
+          const current = parseFloat(data.currentEarnings) || 0;
+          const nextDate = data.nextTransferDate || "—";
+
+          // retrieve past values
+          const lastKnown = parseFloat(data.lastKnownEarnings) || 0;
+          const lastTransferAmount = parseFloat(data.lastTransferAmount) || 0;
+          const lastTransferDate = data.lastTransferDate || "—";
+
+          let status = "Not Yet";
+          let displayAmount = current;
+          let displayDate = nextDate;
+
+          // ⛳ Transfer detection
+          if (current < lastKnown) {
+            status = "Transferred";
+            displayAmount = lastKnown;
+            displayDate = nextDate;
+
+            // update Firestore
+            await setDoc(doc(earningsDB, "earnings_logs", id), {
+              lastTransferAmount: lastKnown,
+              lastTransferDate: nextDate,
+              lastKnownEarnings: current,
+              transferred: true
+            }, { merge: true });
+          } else {
+            // update lastKnown earnings to current
+            await setDoc(doc(earningsDB, "earnings_logs", id), {
+              lastKnownEarnings: current
+            }, { merge: true });
           }
-        });
 
-        // Sort: Transferred first, then by highest earnings
+          if ((users.has(user) || workers.has(wid)) && displayAmount >= 8) {
+            total += displayAmount;
+            qualifying.push({
+              user,
+              wid,
+              val: displayAmount,
+              nextDate: displayDate,
+              status
+            });
+          }
+        }
+
+        // sort: transferred first
         qualifying.sort((a, b) => {
           if (a.status === "Transferred" && b.status !== "Transferred") return -1;
           if (b.status === "Transferred" && a.status !== "Transferred") return 1;
-          return b.val - a.val;
+          return 0;
         });
 
         setTotalText(`Total Earnings (≥ $8 Users): $${total.toFixed(2)} (${qualifying.length} qualified)`);
 
         const tbody = subTable.querySelector("tbody");
         tbody.innerHTML = "";
+
         qualifying.forEach(q => {
           const tr = document.createElement("tr");
           tr.innerHTML = `
             <td>${q.user}</td>
             <td>${q.wid}</td>
-            <td style="color:#15803d;font-weight:600;">${q.val.toFixed(2)}</td>
+            <td style="color:#15803d;font-weight:600">${q.val.toFixed(2)}</td>
             <td>${q.nextDate}</td>
-            <td style="font-weight:bold; color:${q.status === "Transferred" ? "#b91c1c" : "#065f46"}">
-              ${q.status}
-            </td>
+            <td style="font-weight:bold;color:${q.status === "Transferred" ? "#b91c1c" : "#065f46"}">${q.status}</td>
           `;
           tbody.appendChild(tr);
         });
@@ -198,12 +234,13 @@
       }
     }
 
-    setTimeout(calcEarnings, 1500);
+    setTimeout(calcEarnings, 1000);
     setInterval(calcEarnings, 5 * 60 * 1000);
 
     // =========================
-    // 🔔 Notifications & HITs
+    // 🔔 HITs Notification
     // =========================
+
     const tableBody = document.querySelector("#hits-body");
     const soundUrl  = "https://www.allbyjohn.com/sounds/mturkscanner/lessthan15Short.mp3";
     let knownIds = new Set();
@@ -211,13 +248,14 @@
     function playSound() {
       const audio = new Audio(soundUrl);
       audio.volume = 0.7;
-      audio.play().catch(e => console.warn("⚠️ Autoplay blocked:", e));
+      audio.play().catch(()=>{});
     }
 
     function renderTable(hits) {
       tableBody.innerHTML = "";
       hits.sort((a, b) => new Date(b.acceptedAt) - new Date(a.acceptedAt));
-      for (const h of hits) {
+
+      hits.forEach(h => {
         const tr = document.createElement("tr");
         tr.innerHTML = `
           <td>${h.user || "-"}</td>
@@ -228,7 +266,7 @@
           <td>${h.acceptedAt ? new Date(h.acceptedAt).toLocaleString() : "-"}</td>
         `;
         tableBody.appendChild(tr);
-      }
+      });
     }
 
     const titlebar = document.querySelector(".titlebar");
@@ -236,44 +274,45 @@
     notifBtn.id = "enableNotif";
     notifBtn.textContent = "Enable notifications";
     Object.assign(notifBtn.style, {
-      padding: "6px 10px",
-      borderRadius: "999px",
-      border: "1px solid #d1d5db",
-      background: "#ffffff",
-      cursor: "pointer",
-      fontSize: "12px"
+      padding:"6px 10px",
+      borderRadius:"999px",
+      border:"1px solid #d1d5db",
+      background:"white",
+      cursor:"pointer",
+      fontSize:"12px"
     });
     titlebar.appendChild(notifBtn);
 
     function updateNotifButtonVisibility() {
       if (!("Notification" in window)) {
-        notifBtn.style.display = "none";
+        notifBtn.style.display="none";
         return;
       }
       notifBtn.style.display = Notification.permission === "granted" ? "none" : "inline-block";
     }
     updateNotifButtonVisibility();
 
-    notifBtn.addEventListener("click", async () => {
-      if (!("Notification" in window)) return;
+    notifBtn.addEventListener("click", async()=>{
       try { await Notification.requestPermission(); } catch {}
       updateNotifButtonVisibility();
     });
 
     const notifiedIds = new Set();
+
     function notifyNewHit(h) {
       if (!("Notification" in window)) return;
       if (Notification.permission !== "granted") return;
-      if (!h?.assignmentId || notifiedIds.has(h.assignmentId)) return;
+      if (!h.assignmentId || notifiedIds.has(h.assignmentId)) return;
 
       const title = `New HIT • ${h.requester || "Requester"}`;
-      const body  = `${h.title || "Untitled"}\nReward: $${h.reward || 0} • ${h.user || h.workerId || ""}`;
-      const n = new Notification(title, { body, tag: h.assignmentId, silent: true });
+      const body = `${h.title}\nReward: $${h.reward} • ${h.user || h.workerId}`;
+      const n = new Notification(title, { body, tag:h.assignmentId, silent:true });
+      
       n.onclick = () => { window.focus(); try { n.close(); } catch {}; };
 
       notifiedIds.add(h.assignmentId);
-      setTimeout(() => notifiedIds.delete(h.assignmentId), 120_000);
-      setTimeout(() => { try { n.close(); } catch {}; }, 8000);
+      setTimeout(()=>notifiedIds.delete(h.assignmentId),120000);
+      setTimeout(()=>{ try{ n.close(); } catch{}; },8000);
     }
 
     onSnapshot(collection(db, "hits"), (snapshot) => {
@@ -291,20 +330,17 @@
       });
 
       if (knownIds.size > 0) {
-        const added = Array.from(newIds).filter(id => !knownIds.has(id));
+        const added = [...newIds].filter(id => !knownIds.has(id));
         if (added.length > 0) {
           playSound();
-          for (const id of added) {
-            const h = hitsById.get(id);
-            if (h) notifyNewHit(h);
-          }
+          added.forEach(id => notifyNewHit(hitsById.get(id)));
         }
       }
 
       knownIds = newIds;
       renderTable(hits);
-      console.log("✅ Live update:", hits.length, "active HIT(s)");
     });
+
   </script>
 
   <style>
@@ -323,37 +359,37 @@
       flex-wrap:wrap;
     }
     h1 {
-      color: #0f62fe;
-      margin: 0;
+      color:#0f62fe;
+      margin:0;
     }
     #onlineCount {
-      font-size: 14px;
-      color: #6b7280;
-      background: #eef2ff;
-      border: 1px solid #e5e7eb;
-      border-radius: 999px;
-      padding: 4px 10px;
+      font-size:14px;
+      color:#6b7280;
+      background:#eef2ff;
+      border:1px solid #e5e7eb;
+      border-radius:999px;
+      padding:4px 10px;
     }
     table.main {
-      width: 100%;
-      border-collapse: collapse;
-      background: white;
-      box-shadow: 0 2px 6px rgba(0,0,0,0.1);
-      border-radius: 8px;
-      overflow: hidden;
+      width:100%;
+      border-collapse:collapse;
+      background:white;
+      box-shadow:0 2px 6px rgba(0,0,0,0.1);
+      border-radius:8px;
+      overflow:hidden;
     }
     th, td {
-      padding: 10px 12px;
-      border-bottom: 1px solid #e5e7eb;
-      text-align: left;
+      padding:10px 12px;
+      border-bottom:1px solid #e5e7eb;
+      text-align:left;
     }
     th {
-      background: #0f62fe;
-      color: white;
-      font-weight: 600;
+      background:#0f62fe;
+      color:white;
+      font-weight:600;
     }
     tr:hover {
-      background: #f1f5f9;
+      background:#f1f5f9;
     }
     #qualTable thead th {
       background:#0f62fe;
@@ -363,13 +399,14 @@
       padding:6px 8px;
     }
     .footer {
-      text-align: center;
-      margin-top: 12px;
-      color: #6b7280;
-      font-size: 13px;
+      text-align:center;
+      margin-top:12px;
+      color:#6b7280;
+      font-size:13px;
     }
   </style>
 </head>
+
 <body>
   <div class="titlebar">
     <h1>🔥 MTurk Accepted HITs (Live Monitor)</h1>
@@ -391,7 +428,7 @@
   </table>
 
   <div class="footer">
-    Real-time updates • Plays sound & shows desktop notifications when new HIT arrives
+    Real-time updates • Sound + Desktop notifications for new HITs
   </div>
 </body>
 </html>
