@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>🔥 MTurk Accepted HITs – Live + Earnings (≥ $8 Qualified Users)</title>
+  <title>🔥 MTurk Accepted HITs – Live + Earnings</title>
 
   <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
@@ -77,7 +77,7 @@
     startPresence();
 
     // =========================
-    // 💰 Earnings (≥ $8) + toggle list
+    // 💰 Earnings + Status + Sorting
     // =========================
     const totalEl = document.createElement("div");
     totalEl.id = "earningsTotal";
@@ -91,7 +91,7 @@
     const subTable = document.createElement("table");
     subTable.id = "qualTable";
     subTable.style.cssText = `
-      width:70%;
+      width:90%;
       margin:0 auto 16px auto;
       border-collapse:collapse;
       background:white;
@@ -106,6 +106,7 @@
           <th>Worker ID</th>
           <th>Current Earnings ($)</th>
           <th>Next Transfer Date</th>
+          <th>Status</th>
         </tr>
       </thead>
       <tbody></tbody>
@@ -148,36 +149,48 @@
       try {
         const { users, workers } = await fetchCSV();
         const snap = await getDocs(collection(earningsDB, "earnings_logs"));
+
         let total = 0;
         let qualifying = [];
-        snap.forEach(doc => {
-          const d = doc.data();
+
+        snap.forEach(docSnap => {
+          const d = docSnap.data();
+          const val = parseFloat(d.currentEarnings) || 0;
           const user = (d.user || "").trim();
           const wid = (d.workerId || "").trim();
-          const val = parseFloat(d.currentEarnings) || 0;
           const nextDate = d.nextTransferDate || "—";
+
           if ((users.has(user) || workers.has(wid)) && val >= 8) {
+            const status = (nextDate !== "—") ? "Transferred" : "Active";
             total += val;
-            qualifying.push({ user, wid, val, nextDate });
+            qualifying.push({ user, wid, val, nextDate, status });
           }
+        });
+
+        // Sort: Transferred first, then by highest earnings
+        qualifying.sort((a, b) => {
+          if (a.status === "Transferred" && b.status !== "Transferred") return -1;
+          if (b.status === "Transferred" && a.status !== "Transferred") return 1;
+          return b.val - a.val;
         });
 
         setTotalText(`Total Earnings (≥ $8 Users): $${total.toFixed(2)} (${qualifying.length} qualified)`);
 
         const tbody = subTable.querySelector("tbody");
         tbody.innerHTML = "";
-        qualifying
-          .sort((a,b)=>b.val - a.val)
-          .forEach(q=>{
-            const tr = document.createElement("tr");
-            tr.innerHTML = `
-              <td style="padding:6px 8px;border-bottom:1px solid #e5e7eb;">${q.user}</td>
-              <td style="padding:6px 8px;border-bottom:1px solid #e5e7eb;">${q.wid}</td>
-              <td style="padding:6px 8px;border-bottom:1px solid #e5e7eb;color:#15803d;font-weight:600;">${q.val.toFixed(2)}</td>
-              <td style="padding:6px 8px;border-bottom:1px solid #e5e7eb;">${q.nextDate}</td>
-            `;
-            tbody.appendChild(tr);
-          });
+        qualifying.forEach(q => {
+          const tr = document.createElement("tr");
+          tr.innerHTML = `
+            <td>${q.user}</td>
+            <td>${q.wid}</td>
+            <td style="color:#15803d;font-weight:600;">${q.val.toFixed(2)}</td>
+            <td>${q.nextDate}</td>
+            <td style="font-weight:bold; color:${q.status === "Transferred" ? "#b91c1c" : "#065f46"}">
+              ${q.status}
+            </td>
+          `;
+          tbody.appendChild(tr);
+        });
 
       } catch (err) {
         console.error("⚠️ Earnings fetch error:", err);
