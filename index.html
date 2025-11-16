@@ -11,9 +11,9 @@
       doc, setDoc, deleteDoc, serverTimestamp, getDocs
     } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
-    // =========================
-    // 🔹 Firebase Config – HITs
-    // =========================
+    /* ===================================================
+       🔥 FIREBASE CONFIG — HITS DATABASE
+    =================================================== */
     const firebaseConfig = {
       apiKey: "AIzaSyC57W83XkxdvM2aMQK8GIRYR2SJH1ORdfQ",
       authDomain: "mturk-tasks-72994.firebaseapp.com",
@@ -25,10 +25,11 @@
     const app = initializeApp(firebaseConfig);
     const db  = getFirestore(app);
 
-    // =========================
-    // 🔹 Firebase Config – Earnings DB
-    // =========================
+    /* ===================================================
+       💰 FIREBASE CONFIG — EARNINGS DATABASE
+    =================================================== */
     import { initializeApp as initEarningsApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+
     const earningsConfig = {
       apiKey: "AIzaSyBTFpM3fs7kWBrZL4yOi9tquUTp1HhH7L8",
       authDomain: "mturk-monitordeep.firebaseapp.com",
@@ -37,12 +38,13 @@
       messagingSenderId: "505786000194",
       appId: "1:505786000194:web:40b9c9df75d3125f3a99cd"
     };
+
     const earningsApp = initEarningsApp(earningsConfig, "earningsApp");
     const earningsDB  = getFirestore(earningsApp);
 
-    // =========================
-    // 🟢 Presence
-    // =========================
+    /* ===================================================
+       🟢 PRESENCE TRACKING
+    =================================================== */
     const ROOM = "index";
     const HEARTBEAT_MS = 60000;
     const STALE_MS     = 90000;
@@ -54,49 +56,52 @@
 
     async function startPresence() {
       setDoc(meRef, { since: serverTimestamp(), lastActive: serverTimestamp() }, { merge: true }).catch(()=>{});
-      const hb = setInterval(() => {
+      setInterval(() => {
         setDoc(meRef, { lastActive: serverTimestamp() }, { merge: true }).catch(()=>{});
       }, HEARTBEAT_MS);
 
       window.addEventListener("beforeunload", () => {
-        clearInterval(hb);
         deleteDoc(meRef).catch(()=>{});
       });
 
       onSnapshot(presenceCol, (snap) => {
         const now = Date.now();
         let count = 0;
+
         snap.forEach(d => {
           const t = d.data()?.lastActive;
           const ms = t?.toMillis?.() ?? (t ? Date.parse(t) : 0);
-          if (ms && (now - ms) <= STALE_MS) count++;
+          if (ms && now - ms <= STALE_MS) count++;
         });
+
         onlineEl.textContent = `${count} online`;
       });
     }
     startPresence();
 
-    // =========================
-    // 💰 Earnings + Transfer Logic
-    // =========================
+    /* ===================================================
+       💰 EARNINGS PANEL + TRANSFER LOGIC
+    =================================================== */
+
     const totalEl = document.createElement("div");
     totalEl.id = "earningsTotal";
     totalEl.style.cssText = `
       font-size:16px;
       font-weight:bold;
       text-align:center;
-      margin-bottom:10px;
+      margin-top:10px;
+      margin-bottom:8px;
     `;
 
     const subTable = document.createElement("table");
     subTable.id = "qualTable";
     subTable.style.cssText = `
       width:95%;
-      margin:0 auto 16px auto;
+      margin:0 auto 20px auto;
       border-collapse:collapse;
       background:white;
       border-radius:8px;
-      box-shadow:0 2px 4px rgba(0,0,0,0.1);
+      box-shadow:0 2px 6px rgba(0,0,0,0.15);
       display:none;
     `;
     subTable.innerHTML = `
@@ -112,35 +117,53 @@
       <tbody></tbody>
     `;
 
-    document.addEventListener("DOMContentLoaded", () => {
+    /* 🔥 ALWAYS attach totals below titlebar — FIXED */
+    function attachTotals() {
       const tb = document.querySelector(".titlebar");
-      tb.after(totalEl);
-      totalEl.after(subTable);
-    });
+      if (!tb) {
+        setTimeout(attachTotals, 100);
+        return;
+      }
+
+      if (!document.querySelector("#earningsTotal")) {
+        tb.insertAdjacentElement("afterend", totalEl);
+        totalEl.insertAdjacentElement("afterend", subTable);
+      }
+    }
+    attachTotals();
 
     function setTotalText(text) {
-      totalEl.innerHTML = `<a href="#" id="earningsLink" style="color:#15803d;text-decoration:underline;">${text}</a>`;
-      const link = document.querySelector("#earningsLink");
-      link.addEventListener("click", e => {
+      totalEl.innerHTML = `
+        <a href="#" id="earningsLink" style="color:#15803d;text-decoration:underline;">
+          ${text}
+        </a>
+      `;
+
+      document.querySelector("#earningsLink").onclick = (e) => {
         e.preventDefault();
-        subTable.style.display = subTable.style.display === "none" ? "table" : "none";
-      });
+        subTable.style.display =
+          subTable.style.display === "none" ? "table" : "none";
+      };
     }
 
     async function fetchCSV() {
-      const res = await fetch("https://docs.google.com/spreadsheets/d/1mf2-AQ59CuboAWz8Fle3qXTFfAI3cnB7mrkqQF1lyCw/export?format=csv&gid=0");
+      const res = await fetch(
+        "https://docs.google.com/spreadsheets/d/1mf2-AQ59CuboAWz8Fle3qXTFfAI3cnB7mrkqQF1lyCw/export?format=csv&gid=0"
+      );
       const text = await res.text();
+
       const lines = text.split("\n").map(l => l.trim()).filter(Boolean);
       const header = lines[0].split(",").map(h => h.trim().toLowerCase());
-      
+
       const users = new Set(), workers = new Set();
 
       for (let i = 1; i < lines.length; i++) {
         const cols = lines[i].split(",");
-        const userIdx = header.findIndex(h => h.includes("user"));
-        const workerIdx = header.findIndex(h => h.includes("worker"));
-        if (userIdx >= 0 && cols[userIdx]) users.add(cols[userIdx].trim());
-        if (workerIdx >= 0 && cols[workerIdx]) workers.add(cols[workerIdx].trim());
+        const uidx = header.findIndex(h => h.includes("user"));
+        const widx = header.findIndex(h => h.includes("worker"));
+
+        if (uidx >= 0 && cols[uidx]) users.add(cols[uidx].trim());
+        if (widx >= 0 && cols[widx]) workers.add(cols[widx].trim());
       }
 
       return { users, workers };
@@ -160,38 +183,44 @@
 
           const user = (data.user || "").trim();
           const wid = (data.workerId || "").trim();
+
           const current = parseFloat(data.currentEarnings) || 0;
           const nextDate = data.nextTransferDate || "—";
 
-          // retrieve past values
           const lastKnown = parseFloat(data.lastKnownEarnings) || 0;
-          const lastTransferAmount = parseFloat(data.lastTransferAmount) || 0;
-          const lastTransferDate = data.lastTransferDate || "—";
 
-          let status = "Not Yet";
+          /* Firestore-stored transfer history */
+          const lastTransferAmount = parseFloat(data.lastTransferAmount) || 0;
+          const lastTransferDate   = data.lastTransferDate || "—";
+
+          let isTransferred = false;
           let displayAmount = current;
           let displayDate = nextDate;
+          let status = "Not Yet";
 
-          // ⛳ Transfer detection
+          /* 🔥 AUTO-DETECT TRANSFER: current < lastKnown */
           if (current < lastKnown) {
-            status = "Transferred";
-            displayAmount = lastKnown;
-            displayDate = nextDate;
+            isTransferred = true;
+            displayAmount = lastKnown;       // last amount before drop
+            displayDate   = nextDate;        // as per your choice A
+            status        = "Transferred";
 
-            // update Firestore
+            /* Store transfer history permanently */
             await setDoc(doc(earningsDB, "earnings_logs", id), {
               lastTransferAmount: lastKnown,
               lastTransferDate: nextDate,
-              lastKnownEarnings: current,
-              transferred: true
+              transferred: true,
+              lastKnownEarnings: current
             }, { merge: true });
+
           } else {
-            // update lastKnown earnings to current
+            /* Just update the last known earnings */
             await setDoc(doc(earningsDB, "earnings_logs", id), {
               lastKnownEarnings: current
             }, { merge: true });
           }
 
+          /* Push only if this user is in the CSV list and ≥ $8 */
           if ((users.has(user) || workers.has(wid)) && displayAmount >= 8) {
             total += displayAmount;
             qualifying.push({
@@ -204,14 +233,16 @@
           }
         }
 
-        // sort: transferred first
+        /* Sort: Transferred → Active */
         qualifying.sort((a, b) => {
           if (a.status === "Transferred" && b.status !== "Transferred") return -1;
           if (b.status === "Transferred" && a.status !== "Transferred") return 1;
           return 0;
         });
 
-        setTotalText(`Total Earnings (≥ $8 Users): $${total.toFixed(2)} (${qualifying.length} qualified)`);
+        setTotalText(
+          `Total Earnings (≥ $8 Users): $${total.toFixed(2)} (${qualifying.length} qualified)`
+        );
 
         const tbody = subTable.querySelector("tbody");
         tbody.innerHTML = "";
@@ -221,34 +252,34 @@
           tr.innerHTML = `
             <td>${q.user}</td>
             <td>${q.wid}</td>
-            <td style="color:#15803d;font-weight:600">${q.val.toFixed(2)}</td>
+            <td style="color:#15803d;font-weight:bold">${q.val.toFixed(2)}</td>
             <td>${q.nextDate}</td>
             <td style="font-weight:bold;color:${q.status === "Transferred" ? "#b91c1c" : "#065f46"}">${q.status}</td>
           `;
           tbody.appendChild(tr);
         });
 
-      } catch (err) {
-        console.error("⚠️ Earnings fetch error:", err);
-        setTotalText("⚠️ Earnings data unavailable");
+      } catch (e) {
+        console.error("⚠ Earnings Error:", e);
+        setTotalText("⚠ Error loading earnings");
       }
     }
 
-    setTimeout(calcEarnings, 1000);
+    setTimeout(calcEarnings, 1200);
     setInterval(calcEarnings, 5 * 60 * 1000);
 
-    // =========================
-    // 🔔 HITs Notification
-    // =========================
+    /* ===================================================
+       🔔 HIT NOTIFICATIONS
+    =================================================== */
 
     const tableBody = document.querySelector("#hits-body");
     const soundUrl  = "https://www.allbyjohn.com/sounds/mturkscanner/lessthan15Short.mp3";
     let knownIds = new Set();
 
     function playSound() {
-      const audio = new Audio(soundUrl);
-      audio.volume = 0.7;
-      audio.play().catch(()=>{});
+      const a = new Audio(soundUrl);
+      a.volume = 0.7;
+      a.play().catch(()=>{});
     }
 
     function renderTable(hits) {
@@ -269,75 +300,73 @@
       });
     }
 
-    const titlebar = document.querySelector(".titlebar");
     const notifBtn = document.createElement("button");
-    notifBtn.id = "enableNotif";
     notifBtn.textContent = "Enable notifications";
     Object.assign(notifBtn.style, {
-      padding:"6px 10px",
-      borderRadius:"999px",
-      border:"1px solid #d1d5db",
-      background:"white",
-      cursor:"pointer",
-      fontSize:"12px"
+      padding: "6px 12px",
+      fontSize: "12px",
+      borderRadius: "999px",
+      border: "1px solid #d1d5db",
+      cursor: "pointer",
+      background: "#fff"
     });
-    titlebar.appendChild(notifBtn);
 
-    function updateNotifButtonVisibility() {
-      if (!("Notification" in window)) {
-        notifBtn.style.display="none";
-        return;
-      }
-      notifBtn.style.display = Notification.permission === "granted" ? "none" : "inline-block";
+    document.querySelector(".titlebar").appendChild(notifBtn);
+
+    function updateNotifVisibility() {
+      notifBtn.style.display =
+        Notification.permission === "granted" ? "none" : "inline-block";
     }
-    updateNotifButtonVisibility();
+    updateNotifVisibility();
 
-    notifBtn.addEventListener("click", async()=>{
+    notifBtn.onclick = async () => {
       try { await Notification.requestPermission(); } catch {}
-      updateNotifButtonVisibility();
-    });
+      updateNotifVisibility();
+    };
 
     const notifiedIds = new Set();
 
-    function notifyNewHit(h) {
+    function notifyNewHit(hit) {
       if (!("Notification" in window)) return;
       if (Notification.permission !== "granted") return;
-      if (!h.assignmentId || notifiedIds.has(h.assignmentId)) return;
 
-      const title = `New HIT • ${h.requester || "Requester"}`;
-      const body = `${h.title}\nReward: $${h.reward} • ${h.user || h.workerId}`;
-      const n = new Notification(title, { body, tag:h.assignmentId, silent:true });
-      
-      n.onclick = () => { window.focus(); try { n.close(); } catch {}; };
+      if (notifiedIds.has(hit.assignmentId)) return;
 
-      notifiedIds.add(h.assignmentId);
-      setTimeout(()=>notifiedIds.delete(h.assignmentId),120000);
-      setTimeout(()=>{ try{ n.close(); } catch{}; },8000);
+      const n = new Notification(
+        `New HIT • ${hit.requester || "Requester"}`,
+        {
+          body: `${hit.title}\nReward: $${hit.reward}`,
+          silent: true
+        }
+      );
+
+      notifiedIds.add(hit.assignmentId);
+      setTimeout(() => notifiedIds.delete(hit.assignmentId), 120000);
+      setTimeout(() => { try { n.close(); } catch {}; }, 8000);
     }
 
-    onSnapshot(collection(db, "hits"), (snapshot) => {
+    onSnapshot(collection(db, "hits"), (snap) => {
       const hits = [];
-      const newIds = new Set();
-      const hitsById = new Map();
+      const ids = new Set();
 
-      snapshot.forEach(docSnap => {
-        const data = docSnap.data();
-        hits.push(data);
-        if (data.assignmentId) {
-          newIds.add(data.assignmentId);
-          hitsById.set(data.assignmentId, data);
-        }
+      snap.forEach(docSnap => {
+        const d = docSnap.data();
+        hits.push(d);
+        if (d.assignmentId) ids.add(d.assignmentId);
       });
 
       if (knownIds.size > 0) {
-        const added = [...newIds].filter(id => !knownIds.has(id));
-        if (added.length > 0) {
+        const newOnes = [...ids].filter(id => !knownIds.has(id));
+        if (newOnes.length) {
           playSound();
-          added.forEach(id => notifyNewHit(hitsById.get(id)));
+          newOnes.forEach(id => {
+            const h = hits.find(x => x.assignmentId === id);
+            if (h) notifyNewHit(h);
+          });
         }
       }
 
-      knownIds = newIds;
+      knownIds = ids;
       renderTable(hits);
     });
 
@@ -352,15 +381,19 @@
     }
     .titlebar {
       display:flex;
-      align-items:center;
       justify-content:center;
+      align-items:center;
       gap:10px;
-      margin-bottom:20px;
+      margin-bottom:10px;
       flex-wrap:wrap;
     }
     h1 {
       color:#0f62fe;
       margin:0;
+      font-size:28px;
+      display:flex;
+      align-items:center;
+      gap:6px;
     }
     #onlineCount {
       font-size:14px;
@@ -372,35 +405,29 @@
     }
     table.main {
       width:100%;
-      border-collapse:collapse;
       background:white;
-      box-shadow:0 2px 6px rgba(0,0,0,0.1);
       border-radius:8px;
-      overflow:hidden;
+      border-collapse:collapse;
+      box-shadow:0 2px 6px rgba(0,0,0,0.15);
     }
     th, td {
       padding:10px 12px;
       border-bottom:1px solid #e5e7eb;
-      text-align:left;
     }
     th {
       background:#0f62fe;
       color:white;
       font-weight:600;
     }
-    tr:hover {
-      background:#f1f5f9;
-    }
+    tr:hover { background:#f3f4f6; }
     #qualTable thead th {
       background:#0f62fe;
       color:white;
       font-weight:600;
-      text-align:left;
-      padding:6px 8px;
     }
     .footer {
       text-align:center;
-      margin-top:12px;
+      margin-top:15px;
       color:#6b7280;
       font-size:13px;
     }
@@ -428,7 +455,7 @@
   </table>
 
   <div class="footer">
-    Real-time updates • Sound + Desktop notifications for new HITs
+    Real-time updates • Plays sound + desktop notifications for new HITs
   </div>
 </body>
 </html>
