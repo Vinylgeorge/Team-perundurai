@@ -64,9 +64,7 @@ function simpleDate(d) {
 function needsSync() {
   const last = localStorage.getItem(SYNC_KEY);
   if (!last) return true;
-
-  const today = simpleDate(new Date());
-  return today !== last;
+  return simpleDate(new Date()) !== last;
 }
 
 function markSynced() {
@@ -74,7 +72,7 @@ function markSynced() {
 }
 
 /* ======================================================
-   NEXT SYNC COUNTDOWN (12:00 AM)
+   NEXT SYNC COUNTDOWN
 ====================================================== */
 function updateCountdown() {
   const now = new Date();
@@ -92,7 +90,7 @@ setInterval(updateCountdown, 60 * 1000);
 updateCountdown();
 
 /* ======================================================
-   LOAD CSV
+   LOAD MAIN CSV (for displaying qualified users)
 ====================================================== */
 async function loadCSV() {
   const res = await fetch(
@@ -101,7 +99,8 @@ async function loadCSV() {
   const text = await res.text();
 
   const lines = text.split("\n").filter(Boolean);
-  const users = new Set(), workers = new Set();
+  const users = new Set();
+  const workers = new Set();
 
   for (let i = 1; i < lines.length; i++) {
     const [u, w] = lines[i].split(",");
@@ -109,6 +108,25 @@ async function loadCSV() {
     if (w) workers.add(w.trim());
   }
   return { users, workers };
+}
+
+/* ======================================================
+   LOAD TEAM CSV (EXCEL EXPORT ONLY)
+====================================================== */
+async function loadTeamCSV() {
+  const res = await fetch(
+    "https://docs.google.com/spreadsheets/d/1W0fYDHy8nePZ-rkqZAX2DVOEufSHe7UJfB7OeC49b1o/export?format=csv&gid=0"
+  );
+  const text = await res.text();
+
+  const lines = text.split("\n").filter(Boolean);
+  const teamUsers = new Set();
+
+  for (let i = 1; i < lines.length; i++) {
+    const user = lines[i].split(",")[0];
+    if (user) teamUsers.add(user.trim());
+  }
+  return teamUsers;
 }
 
 /* ======================================================
@@ -212,7 +230,7 @@ async function buildTable() {
 }
 
 /* ======================================================
-   EXCEL EXPORT (ONLY 4 FIELDS)
+   EXCEL EXPORT (ONLY TEAM USERS)
 ====================================================== */
 
 const EXCEL_KEY = "earnings_excel_data";
@@ -222,41 +240,53 @@ function needsExcelRefresh() {
   return localStorage.getItem(EXCEL_DATE) !== simpleDate(new Date());
 }
 
-function buildExcelData(rawList) {
-  return rawList.map(d => ({
-    "User": d.user || "",
-    "Current Earnings": d.currentEarnings || "",
-    "Last Month Earnings": d.lastMonthEarnings || "",
-    "Next Transfer Date": d.nextTransferDate || d.lastTransferDate || "—"
-  }));
+function buildExcelRows(rawList, teamUsers) {
+  const rows = [];
+
+  for (const d of rawList) {
+    const user = (d.user || "").trim();
+    if (!teamUsers.has(user)) continue;
+
+    rows.push({
+      "User": user,
+      "Current Earnings": d.currentEarnings || "",
+      "Last Month Earnings": d.lastMonthEarnings || "",
+      "Next Transfer Date": d.nextTransferDate || d.lastTransferDate || "—"
+    });
+  }
+  return rows;
 }
 
-document.getElementById("downloadExcel").onclick = () => {
+document.getElementById("downloadExcel").onclick = async () => {
   const today = simpleDate(new Date());
 
   if (needsExcelRefresh()) {
+    const teamUsers = await loadTeamCSV();
     const raw = loadFromCache();
+
     if (raw.length === 0) {
       alert("Data not loaded yet.");
       return;
     }
 
-    const rows = buildExcelData(raw);
+    const rows = buildExcelRows(raw, teamUsers);
+
     localStorage.setItem(EXCEL_KEY, JSON.stringify(rows));
     localStorage.setItem(EXCEL_DATE, today);
   }
 
   const excelRows = JSON.parse(localStorage.getItem(EXCEL_KEY) || "[]");
+
   if (excelRows.length === 0) {
-    alert("No data available.");
+    alert("No data available for export.");
     return;
   }
 
   const ws = XLSX.utils.json_to_sheet(excelRows);
   const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, "Earnings");
+  XLSX.utils.book_append_sheet(wb, ws, "Team Earnings");
 
-  XLSX.writeFile(wb, `Earnings_${today}.xlsx`);
+  XLSX.writeFile(wb, `Team_Earnings_${today}.xlsx`);
 };
 
 /* START */
@@ -270,65 +300,28 @@ body {
   background: #f8fafc;
   padding: 20px;
 }
-h1 {
-  text-align: center;
-  color: #0f62fe;
-}
-#loading {
-  text-align:center;
-  margin-top:10px;
-  color:#6b7280;
-}
-#total {
-  text-align:center;
-  font-size:18px;
-  font-weight:bold;
-  margin-top:15px;
-}
-#next-sync {
-  text-align:center;
-  color:#6b7280;
-  margin-bottom:10px;
-}
+h1 { text-align: center; color: #0f62fe; }
+#loading { text-align:center; color:#6b7280; margin-top:10px; }
+#total { text-align:center; font-size:18px; font-weight:bold; margin-top:15px; }
+#next-sync { text-align:center; color:#6b7280; margin-bottom:10px; }
 table {
-  width:95%;
-  margin:15px auto;
-  background:white;
-  border-radius:8px;
-  border-collapse:collapse;
+  width:95%; margin:15px auto; background:white;
+  border-radius:8px; border-collapse:collapse;
   box-shadow:0 2px 6px rgba(0,0,0,0.15);
 }
-th, td {
-  padding:10px;
-  border-bottom:1px solid #e5e7eb;
-}
-th {
-  background:#0f62fe;
-  color:white;
-}
+th, td { padding:10px; border-bottom:1px solid #e5e7eb; }
+th { background:#0f62fe; color:white; }
 .del-btn {
-  background:#dc2626;
-  color:white;
-  padding:4px 8px;
-  border:none;
-  border-radius:6px;
-  cursor:pointer;
+  background:#dc2626; color:white; padding:4px 8px;
+  border:none; border-radius:6px; cursor:pointer;
 }
 .del-btn:hover { background:#b91c1c; }
-
 .excel-btn {
-  background:#0d9488;
-  color:white;
-  padding:8px 14px;
-  border:none;
-  border-radius:6px;
-  cursor:pointer;
-  font-size:14px;
-  font-weight:600;
+  background:#0d9488; color:white; padding:8px 14px;
+  border:none; border-radius:6px; cursor:pointer;
+  font-size:14px; font-weight:600;
 }
-.excel-btn:hover {
-  background:#0f766e;
-}
+.excel-btn:hover { background:#0f766e; }
 </style>
 
 </head>
