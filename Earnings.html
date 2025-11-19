@@ -241,9 +241,10 @@ function buildExcelRows(raw, teamMap) {
 
   for (const [user, wID] of teamMap.entries()){
 
+    // Match by workerId OR doc.id
     const match = raw.find(r =>
-      (r.workerId && r.workerId.trim() === wID) ||     // match by workerId field
-      (r.id && r.id.trim() === wID)                    // match by doc.id (fallback)
+      (r.workerId && r.workerId.trim() === wID) ||
+      (r.id && r.id.trim() === wID)
     );
 
     if (!match) continue;
@@ -252,7 +253,8 @@ function buildExcelRows(raw, teamMap) {
       "User": user,
       "Current Earnings": match.currentEarnings || "",
       "Last Month Earnings": match.lastMonthEarnings || "",
-      "Next Transfer Date": match.nextTransferDate || match.lastTransferDate || "—"
+      "Next Transfer Date": match.nextTransferDate || match.lastTransferDate || "—",
+      "Last Transfer Amount": match.lastTransferAmount || ""
     });
   }
 
