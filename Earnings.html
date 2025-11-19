@@ -47,8 +47,8 @@ const earningsDB = initializeFirestore(earningsApp, {
 ====================================================== */
 const loadingEl = document.getElementById("loading");
 const totalEl = document.getElementById("total");
-const nextSyncEl = document.getElementById("next-sync");
 const tbody = document.getElementById("data-body");
+const nextSyncEl = document.getElementById("next-sync");
 
 /* ======================================================
    DAILY MIDNIGHT SYNC
@@ -69,7 +69,7 @@ function markSynced() {
 }
 
 /* ======================================================
-   COUNTDOWN TO NEXT SYNC
+   COUNTDOWN
 ====================================================== */
 function updateCountdown() {
   const now = new Date();
@@ -77,8 +77,8 @@ function updateCountdown() {
   next.setHours(24,0,0,0);
 
   const diff = next - now;
-  const h = Math.floor(diff / (1000*60*60));
-  const m = Math.floor((diff / (1000*60)) % 60);
+  const h = Math.floor(diff/(1000*60*60));
+  const m = Math.floor((diff/(1000*60)) % 60);
 
   nextSyncEl.innerHTML = `Next Sync: <b>12:00 AM</b> (in ${h}h ${m}m)`;
 }
@@ -93,40 +93,38 @@ async function loadMainCSV() {
     "https://docs.google.com/spreadsheets/d/1mf2-AQ59CuboAWz8Fle3qXTFfAI3cnB7mrkqQF1lyCw/export?format=csv&gid=0"
   );
   const text = await res.text();
+  const lines = text.split("\n").filter(Boolean);
 
   const users = new Set();
   const workers = new Set();
 
-  const lines = text.split("\n").filter(Boolean);
   for (let i=1;i<lines.length;i++){
-    const [u, w] = lines[i].split(",");
+    const [u,w] = lines[i].split(",");
     if (u) users.add(u.trim());
     if (w) workers.add(w.trim());
   }
-
   return { users, workers };
 }
 
 /* ======================================================
-   TEAM CSV (Excel Export Only)
+   TEAM CSV (Excel Export)
 ====================================================== */
 async function loadTeamCSV() {
   const res = await fetch(
-    "https://docs.google.com/spreadsheets/d/1mf2-AQ59CuboAWz8Fle3qXTFfAI3cnB7mrkqQF1lyCw/export?format=csv&gid=0"
+    "https://docs.google.com/spreadsheets/d/1W0fYDHy8nePZ-rkqZAX2DVOEufSHe7UJfB7OeC49b1o/export?format=csv&gid=0"
   );
   const text = await res.text();
-
   const lines = text.split("\n").filter(Boolean);
-  const mapTeam = new Map(); // User → WorkerID
+
+  const teamMap = new Map(); // User → workerId
 
   for (let i=1;i<lines.length;i++){
-    const [user, worker] = lines[i].split(",");
-    if (user && worker){
-      mapTeam.set(user.trim(), worker.trim());
+    const [user, wid] = lines[i].split(",");
+    if (user && wid){
+      teamMap.set(user.trim(), wid.trim());
     }
   }
-
-  return mapTeam;
+  return teamMap;
 }
 
 /* ======================================================
@@ -147,70 +145,92 @@ function loadCache() {
 }
 
 /* ======================================================
-   BUILD TABLE (DISPLAY)
+   BUILD TABLE
 ====================================================== */
 async function buildTable() {
   loadingEl.style.display = "block";
 
-  const { users, workers } = await loadMainCSV();
+  const {users, workers} = await loadMainCSV();
   const all = needsSync() ? await fetchFromFirestore() : loadCache();
 
   tbody.innerHTML = "";
   let total = 0;
   const result = [];
 
+  function isThisMonth(dateStr){
+    if (!dateStr) return false;
+    const p = dateStr.split("/");
+    if (p.length !== 3) return false;
+
+    const m = parseInt(p[0]);
+    const y = 2000 + parseInt(p[2]);
+    const now = new Date();
+
+    return (m === (now.getMonth()+1) && y === now.getFullYear());
+  }
+
   for (const d of all){
+
     const user = (d.user || "").trim();
-    const wid  = (d.workerId || "").trim();
+    const wid = (d.workerId || "").trim();
 
     const curr = parseFloat(d.currentEarnings) || 0;
-    const lt   = parseFloat(d.lastTransferAmount) || 0;
-    const lm   = parseFloat(d.lastMonthEarnings) || 0;
+    const lt = parseFloat(d.lastTransferAmount) || 0;
+    const lm = parseFloat(d.lastMonthEarnings) || 0;
 
     let amt = curr>0 ? curr : lt>0 ? lt : lm>0 ? lm : 0;
-    if (amt < 8) continue;
-
     if (!users.has(user) && !workers.has(wid)) continue;
 
-    const next = d.nextTransferDate || d.lastTransferDate || "—";
+    let next = d.nextTransferDate || d.lastTransferDate || "—";
 
     let status = "Not Yet";
-    if (lt > curr && lt >= 8){
-      status = "Transferred";
+
+    /* RULE A: earnings dropped */
+    if (lt > curr && lt >= 8) {
+      status = `Transferred $${lt.toFixed(2)}`;
       amt = lt;
     }
 
-    result.push({ id:d.id, user, wid, amt, next, status });
+    /* RULE B: has transfer this month */
+    else if (isThisMonth(d.lastTransferDate) && lt >= 8){
+      status = `Transferred $${lt.toFixed(2)}`;
+      amt = lt;
+    }
+
+    /* Only include ≥ $8 */
+    if (amt < 8) continue;
+
+    result.push({id:d.id, user, wid, amt, next, status});
     total += amt;
   }
 
-  result.sort((a,b)=> a.status==="Transferred" ? -1 : 1);
+  result.sort((a,b)=> a.status.includes("Transferred") ? -1 : 1);
 
   totalEl.innerHTML =
     `Total Earnings (≥ $8): <b>$${total.toFixed(2)}</b> (${result.length} users)`;
 
-  for (const row of result){
+  for (const r of result){
     const tr = document.createElement("tr");
     tr.innerHTML = `
-      <td>${row.user}</td>
-      <td>${row.wid}</td>
-      <td style="font-weight:bold;color:#15803d">${row.amt.toFixed(2)}</td>
-      <td>${row.next}</td>
-      <td style="font-weight:bold;color:${row.status==="Transferred" ? "#b91c1c" : "#065f46"}">
-        ${row.status}
+      <td>${r.user}</td>
+      <td>${r.wid}</td>
+      <td style="color:#15803d;font-weight:bold">${r.amt.toFixed(2)}</td>
+      <td>${r.next}</td>
+      <td style="font-weight:bold;color:${r.status.includes("Transferred") ? "#b91c1c" : "#065f46"}">
+        ${r.status}
       </td>
       <td>${
-         row.status==="Transferred"
-         ? `<button class="del" data-id="${row.id}">🗑 Delete</button>`
-         : "—"
+        r.status.includes("Transferred")
+        ? `<button class="del" data-id="${r.id}">🗑 Delete</button>`
+        : "—"
       }</td>
     `;
 
     const btn = tr.querySelector(".del");
     if (btn){
       btn.onclick = async () => {
-        if (!confirm(`Delete ${row.user}?`)) return;
-        await deleteDoc(doc(earningsDB, "earnings_logs", row.id));
+        if (!confirm(`Delete ${r.user}?`)) return;
+        await deleteDoc(doc(earningsDB, "earnings_logs", r.id));
         localStorage.removeItem(CACHE_KEY);
         localStorage.removeItem(SYNC_KEY);
         alert("Deleted!");
@@ -225,26 +245,22 @@ async function buildTable() {
 }
 
 /* ======================================================
-   EXCEL EXPORT (Team → WorkerID → Firestore)
-   NOW FULLY FIXED ✔ (3-level matching)
+   EXCEL EXPORT (FINAL VERSION)
 ====================================================== */
 
-const EXCEL_KEY = "excel_cache_data";
+const EXCEL_KEY = "excel_cache";
 const EXCEL_DATE = "excel_cache_date";
 
-function needsExcel() {
-  return localStorage.getItem(EXCEL_DATE) !== today();
-}
+function needsExcel(){ return localStorage.getItem(EXCEL_DATE) !== today(); }
 
-function buildExcelRows(raw, teamMap) {
+function buildExcelRows(raw, teamMap){
   const rows = [];
 
-  for (const [user, wID] of teamMap.entries()){
+  for (const [user, teamWid] of teamMap.entries()){
 
-    // Match by workerId OR doc.id
     const match = raw.find(r =>
-      (r.workerId && r.workerId.trim() === wID) ||
-      (r.id && r.id.trim() === wID)
+      (r.workerId && r.workerId.trim() === teamWid) ||
+      (r.id && r.id.trim() === teamWid)
     );
 
     if (!match) continue;
@@ -264,15 +280,15 @@ function buildExcelRows(raw, teamMap) {
 document.getElementById("downloadExcel").onclick = async () => {
 
   if (needsExcel()){
-    const team = await loadTeamCSV();
+    const teamMap = await loadTeamCSV();
     const raw = loadCache();
 
     if (raw.length === 0){
-      alert("Data not loaded yet.");
+      alert("Data not ready yet.");
       return;
     }
 
-    const rows = buildExcelRows(raw, team);
+    const rows = buildExcelRows(raw, teamMap);
 
     localStorage.setItem(EXCEL_KEY, JSON.stringify(rows));
     localStorage.setItem(EXCEL_DATE, today());
@@ -292,11 +308,11 @@ document.getElementById("downloadExcel").onclick = async () => {
   XLSX.writeFile(wb, `Team_Earnings_${today()}.xlsx`);
 };
 
-
 /* START */
 buildTable();
 
 </script>
+
 
 <style>
 body { font-family:"Segoe UI",Arial; background:#f8fafc; padding:20px; }
@@ -339,7 +355,7 @@ th { background:#0f62fe; color:white; }
 <div id="next-sync"></div>
 
 <div style="text-align:center;margin-bottom:15px;">
-  <button id="downloadExcel" class="excel-btn">📥 Download Today’s Excel For all Users</button>
+  <button id="downloadExcel" class="excel-btn">📥 Download Today’s Excel</button>
 </div>
 
 <table>
