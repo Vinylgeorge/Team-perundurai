@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <title>💰 MTurk Earnings Monitor (Daily Read-Only)</title>
 
+<!-- SheetJS for Excel -->
 <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
 
 <script type="module">
@@ -33,7 +34,7 @@ const earningsConfig = {
 };
 
 /* ======================================================
-   FORCE LONG POLLING (fix for TiinyHost)
+   TiinyHost FIX → FORCE LONG POLLING
 ====================================================== */
 const earningsApp = initializeApp(earningsConfig, "earningsApp");
 const earningsDB = initializeFirestore(earningsApp, {
@@ -42,18 +43,18 @@ const earningsDB = initializeFirestore(earningsApp, {
 });
 
 /* ======================================================
-   ELEMENTS
+   BASIC ELEMENTS
 ====================================================== */
 const loadingEl = document.getElementById("loading");
-const totalEl   = document.getElementById("total");
+const totalEl = document.getElementById("total");
 const nextSyncEl = document.getElementById("next-sync");
-const tbody     = document.getElementById("data-body");
+const tbody = document.getElementById("data-body");
 
 /* ======================================================
-   MIDNIGHT SYNC LOGIC
+   DAILY MIDNIGHT SYNC
 ====================================================== */
 const CACHE_KEY = "earnings_cache_data";
-const SYNC_KEY  = "earnings_last_sync_date";
+const SYNC_KEY = "earnings_last_sync";
 
 function today() {
   return new Date().toISOString().slice(0,10);
@@ -72,14 +73,14 @@ function markSynced() {
 ====================================================== */
 function updateCountdown() {
   const now = new Date();
-  const midnight = new Date();
-  midnight.setHours(24, 0, 0, 0);
+  const next = new Date();
+  next.setHours(24,0,0,0);
 
-  const diff = midnight - now;
+  const diff = next - now;
   const h = Math.floor(diff / (1000*60*60));
   const m = Math.floor((diff / (1000*60)) % 60);
 
-  nextSyncEl.innerHTML = `Next sync at <b>12:00 AM</b> (in ${h}h ${m}m)`;
+  nextSyncEl.innerHTML = `Next Sync: <b>12:00 AM</b> (in ${h}h ${m}m)`;
 }
 setInterval(updateCountdown, 60000);
 updateCountdown();
@@ -93,17 +94,17 @@ async function loadMainCSV() {
   );
   const text = await res.text();
 
-  const lines = text.split("\n").filter(Boolean);
   const users = new Set();
   const workers = new Set();
 
-  for (let i=1;i<lines.length;i++) {
-    const [u,w] = lines[i].split(",");
+  const lines = text.split("\n").filter(Boolean);
+  for (let i=1;i<lines.length;i++){
+    const [u, w] = lines[i].split(",");
     if (u) users.add(u.trim());
     if (w) workers.add(w.trim());
   }
 
-  return {users, workers};
+  return { users, workers };
 }
 
 /* ======================================================
@@ -116,25 +117,25 @@ async function loadTeamCSV() {
   const text = await res.text();
 
   const lines = text.split("\n").filter(Boolean);
-  const mapUserToWorker = new Map();
+  const mapTeam = new Map(); // User → WorkerID
 
   for (let i=1;i<lines.length;i++){
     const [user, worker] = lines[i].split(",");
-    if (user && worker) {
-      mapUserToWorker.set(user.trim(), worker.trim());
+    if (user && worker){
+      mapTeam.set(user.trim(), worker.trim());
     }
   }
 
-  return mapUserToWorker;  // Map(User → WorkerID)
+  return mapTeam;
 }
 
 /* ======================================================
-   FIRESTORE READ (Daily)
+   FIRESTORE (Daily Cache)
 ====================================================== */
 async function fetchFromFirestore() {
   const snap = await getDocs(collection(earningsDB, "earnings_logs"));
   const arr = [];
-  snap.forEach(doc => arr.push({id: doc.id, ...doc.data()}));
+  snap.forEach(d => arr.push({ id: d.id, ...d.data() }));
 
   localStorage.setItem(CACHE_KEY, JSON.stringify(arr));
   markSynced();
@@ -151,14 +152,14 @@ function loadCache() {
 async function buildTable() {
   loadingEl.style.display = "block";
 
-  const {users, workers} = await loadMainCSV();
-  const raw = needsSync() ? await fetchFromFirestore() : loadCache();
+  const { users, workers } = await loadMainCSV();
+  const all = needsSync() ? await fetchFromFirestore() : loadCache();
 
   tbody.innerHTML = "";
   let total = 0;
-  const final = [];
+  const result = [];
 
-  for (const d of raw) {
+  for (const d of all){
     const user = (d.user || "").trim();
     const wid  = (d.workerId || "").trim();
 
@@ -174,42 +175,42 @@ async function buildTable() {
     const next = d.nextTransferDate || d.lastTransferDate || "—";
 
     let status = "Not Yet";
-    if (lt > curr && lt >= 8) {
+    if (lt > curr && lt >= 8){
       status = "Transferred";
       amt = lt;
     }
 
-    final.push({id:d.id, user, wid, amt, next, status});
+    result.push({ id:d.id, user, wid, amt, next, status });
     total += amt;
   }
 
-  final.sort((a,b)=> a.status==="Transferred" ? -1 : 1);
+  result.sort((a,b)=> a.status==="Transferred" ? -1 : 1);
 
   totalEl.innerHTML =
-    `Total Earnings (≥ $8): <b>$${total.toFixed(2)}</b> (${final.length} users)`;
+    `Total Earnings (≥ $8): <b>$${total.toFixed(2)}</b> (${result.length} users)`;
 
-  for (const x of final){
+  for (const row of result){
     const tr = document.createElement("tr");
     tr.innerHTML = `
-      <td>${x.user}</td>
-      <td>${x.wid}</td>
-      <td style="font-weight:bold;color:#15803d">${x.amt.toFixed(2)}</td>
-      <td>${x.next}</td>
-      <td style="font-weight:bold;color:${x.status==="Transferred" ? "#b91c1c":"#065f46"}">
-        ${x.status}
+      <td>${row.user}</td>
+      <td>${row.wid}</td>
+      <td style="font-weight:bold;color:#15803d">${row.amt.toFixed(2)}</td>
+      <td>${row.next}</td>
+      <td style="font-weight:bold;color:${row.status==="Transferred" ? "#b91c1c" : "#065f46"}">
+        ${row.status}
       </td>
       <td>${
-        x.status==="Transferred"
-          ? `<button class="del" data-id="${x.id}">🗑 Delete</button>`
-          : "—"
+         row.status==="Transferred"
+         ? `<button class="del" data-id="${row.id}">🗑 Delete</button>`
+         : "—"
       }</td>
     `;
 
     const btn = tr.querySelector(".del");
     if (btn){
       btn.onclick = async () => {
-        if (!confirm(`Delete ${x.user}?`)) return;
-        await deleteDoc(doc(earningsDB, "earnings_logs", x.id));
+        if (!confirm(`Delete ${row.user}?`)) return;
+        await deleteDoc(doc(earningsDB, "earnings_logs", row.id));
         localStorage.removeItem(CACHE_KEY);
         localStorage.removeItem(SYNC_KEY);
         alert("Deleted!");
@@ -224,21 +225,26 @@ async function buildTable() {
 }
 
 /* ======================================================
-   EXCEL EXPORT (Team CSV → WorkerID → Firestore)
+   EXCEL EXPORT (Team → WorkerID → Firestore)
+   NOW FULLY FIXED ✔ (3-level matching)
 ====================================================== */
 
-const EXCEL_KEY = "team_excel_cache";
-const EXCEL_DATE = "team_excel_date";
+const EXCEL_KEY = "excel_cache_data";
+const EXCEL_DATE = "excel_cache_date";
 
 function needsExcel() {
   return localStorage.getItem(EXCEL_DATE) !== today();
 }
 
-function buildExcelRows(raw, mapTeam) {
+function buildExcelRows(raw, teamMap) {
   const rows = [];
 
-  for (const [user, worker] of mapTeam.entries()){
-    const match = raw.find(r => (r.workerId || "").trim() === worker);
+  for (const [user, wID] of teamMap.entries()){
+
+    const match = raw.find(r =>
+      (r.workerId && r.workerId.trim() === wID) ||     // match by workerId field
+      (r.id && r.id.trim() === wID)                    // match by doc.id (fallback)
+    );
 
     if (!match) continue;
 
@@ -254,22 +260,24 @@ function buildExcelRows(raw, mapTeam) {
 }
 
 document.getElementById("downloadExcel").onclick = async () => {
+
   if (needsExcel()){
-    const mapTeam = await loadTeamCSV();
+    const team = await loadTeamCSV();
     const raw = loadCache();
 
-    if (raw.length === 0) {
-      alert("Data not ready yet.");
+    if (raw.length === 0){
+      alert("Data not loaded yet.");
       return;
     }
 
-    const rows = buildExcelRows(raw, mapTeam);
+    const rows = buildExcelRows(raw, team);
 
     localStorage.setItem(EXCEL_KEY, JSON.stringify(rows));
     localStorage.setItem(EXCEL_DATE, today());
   }
 
   const rows = JSON.parse(localStorage.getItem(EXCEL_KEY) || "[]");
+
   if (rows.length === 0){
     alert("No matching data found.");
     return;
@@ -281,6 +289,7 @@ document.getElementById("downloadExcel").onclick = async () => {
 
   XLSX.writeFile(wb, `Team_Earnings_${today()}.xlsx`);
 };
+
 
 /* START */
 buildTable();
@@ -297,14 +306,14 @@ h1 { text-align:center; color:#0f62fe; }
 table {
   width:95%; margin:15px auto; background:#fff;
   border-radius:8px; border-collapse:collapse;
-  box-shadow:0 2px 6px rgba(0,0,0,0.15);
+  box-shadow:0 2px 6px rgba(0,0,0,0.12);
 }
 th,td { padding:10px; border-bottom:1px solid #e5e7eb; }
-th { background:#0f62fe; color:#fff; }
+th { background:#0f62fe; color:white; }
 
 .del {
   background:#dc2626; color:white;
-  border:none; padding:5px 10px;
+  padding:5px 10px; border:none;
   border-radius:6px; cursor:pointer;
 }
 .del:hover { background:#b91c1c; }
@@ -328,7 +337,7 @@ th { background:#0f62fe; color:#fff; }
 <div id="next-sync"></div>
 
 <div style="text-align:center;margin-bottom:15px;">
-  <button id="downloadExcel" class="excel-btn">📥 Download Today's Excel</button>
+  <button id="downloadExcel" class="excel-btn">📥 Download Today’s Excel</button>
 </div>
 
 <table>
