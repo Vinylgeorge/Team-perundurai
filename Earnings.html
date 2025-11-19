@@ -4,6 +4,9 @@
 <meta charset="UTF-8">
 <title>💰 MTurk Earnings Monitor (Daily Read-Only)</title>
 
+<!-- SheetJS for Excel -->
+<script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
+
 <script type="module">
 
 /* ======================================================
@@ -31,7 +34,7 @@ const earningsConfig = {
 };
 
 /* ======================================================
-   FORCE LONG-POLLING (REQUIRED FOR TIINYHOST)
+   FORCE LONG POLLING (REQUIRED ON TIINYHOST)
 ====================================================== */
 const earningsApp = initializeApp(earningsConfig, "earningsApp");
 
@@ -54,7 +57,6 @@ const tbody     = document.getElementById("data-body");
 const CACHE_KEY = "earnings_cache_data";
 const SYNC_KEY  = "earnings_last_sync_date";
 
-// Convert date to YYYY-MM-DD
 function simpleDate(d) {
   return d.toISOString().slice(0, 10);
 }
@@ -68,8 +70,7 @@ function needsSync() {
 }
 
 function markSynced() {
-  const today = simpleDate(new Date());
-  localStorage.setItem(SYNC_KEY, today);
+  localStorage.setItem(SYNC_KEY, simpleDate(new Date()));
 }
 
 /* ======================================================
@@ -78,23 +79,20 @@ function markSynced() {
 function updateCountdown() {
   const now = new Date();
   const next = new Date();
-
-  next.setHours(24, 0, 0, 0); // midnight tonight
+  next.setHours(24, 0, 0, 0);
 
   const diff = next - now;
-
   const hrs = Math.floor(diff / (1000 * 60 * 60));
   const mins = Math.floor((diff / (1000 * 60)) % 60);
 
   nextSyncEl.innerHTML =
     `Next automatic sync at: <b>12:00 AM</b> (in ${hrs}h ${mins}m)`;
 }
-
 setInterval(updateCountdown, 60 * 1000);
 updateCountdown();
 
 /* ======================================================
-   CSV LOADER
+   LOAD CSV
 ====================================================== */
 async function loadCSV() {
   const res = await fetch(
@@ -103,37 +101,27 @@ async function loadCSV() {
   const text = await res.text();
 
   const lines = text.split("\n").filter(Boolean);
-  const users = new Set();
-  const workers = new Set();
+  const users = new Set(), workers = new Set();
 
   for (let i = 1; i < lines.length; i++) {
-    const parts = lines[i].split(",");
-    const user = parts[0];
-    const wid  = parts[1];
-
-    if (user) users.add(user.trim());
-    if (wid) workers.add(wid.trim());
+    const [u, w] = lines[i].split(",");
+    if (u) users.add(u.trim());
+    if (w) workers.add(w.trim());
   }
-
   return { users, workers };
 }
 
 /* ======================================================
-   FIRESTORE DAILY READ
+   FIRESTORE READ (DAILY)
 ====================================================== */
 async function fetchFromFirestore() {
-  console.log("DEBUG: Firestore fetch");
-
   const snap = await getDocs(collection(earningsDB, "earnings_logs"));
-  console.log("DEBUG: Firestore snap size =", snap.size);
+  const arr = [];
+  snap.forEach(doc => arr.push({ id: doc.id, ...doc.data() }));
 
-  const data = [];
-  snap.forEach(doc => data.push({ id: doc.id, ...doc.data() }));
-
-  localStorage.setItem(CACHE_KEY, JSON.stringify(data));
+  localStorage.setItem(CACHE_KEY, JSON.stringify(arr));
   markSynced();
-
-  return data;
+  return arr;
 }
 
 function loadFromCache() {
@@ -148,9 +136,7 @@ async function buildTable() {
   loadingEl.style.display = "block";
 
   const { users, workers } = await loadCSV();
-  let earningsData = needsSync()
-    ? await fetchFromFirestore()
-    : loadFromCache();
+  const earningsData = needsSync() ? await fetchFromFirestore() : loadFromCache();
 
   tbody.innerHTML = "";
   let total = 0;
@@ -170,7 +156,6 @@ async function buildTable() {
       month > 0 ? month : 0;
 
     if (amt < 8) continue;
-
     if (!users.has(user) && !workers.has(wid)) continue;
 
     const next = d.nextTransferDate || d.lastTransferDate || "—";
@@ -181,17 +166,14 @@ async function buildTable() {
       amt = transfer;
     }
 
-    qualifying.push({ id: d.id, user, wid, amt, next, status });
+    qualifying.push({ id:d.id, user, wid, amt, next, status });
     total += amt;
   }
 
-  // Order: Transferred first
   qualifying.sort((a,b)=> (a.status === "Transferred" ? -1 : 1));
 
   totalEl.innerHTML =
     `Total Earnings (≥ $8 Users): <b>$${total.toFixed(2)}</b> (${qualifying.length} users)`;
-
-  tbody.innerHTML = "";
 
   for (const q of qualifying) {
     const tr = document.createElement("tr");
@@ -200,22 +182,20 @@ async function buildTable() {
       <td>${q.wid}</td>
       <td style="color:#15803d;font-weight:bold">${q.amt.toFixed(2)}</td>
       <td>${q.next}</td>
-      <td style="font-weight:bold;color:${q.status === "Transferred" ? "#b91c1c" : "#065f46"}">
+      <td style="font-weight:bold;color:${q.status==="Transferred" ? "#b91c1c" : "#065f46"}">
         ${q.status}
       </td>
-
       <td>
-        ${q.status === "Transferred"
+        ${q.status==="Transferred"
           ? `<button class="del-btn" data-id="${q.id}">🗑 Delete</button>`
           : "—"}
       </td>
     `;
 
-    // Attach delete handler
     const btn = tr.querySelector(".del-btn");
     if (btn) {
       btn.onclick = async () => {
-        if (!confirm(`Delete ${q.user} (${q.wid}) ?`)) return;
+        if (!confirm(`Delete ${q.user}?`)) return;
 
         await deleteDoc(doc(earningsDB, "earnings_logs", q.id));
         localStorage.removeItem(CACHE_KEY);
@@ -231,6 +211,55 @@ async function buildTable() {
   loadingEl.style.display = "none";
 }
 
+/* ======================================================
+   EXCEL EXPORT (ONLY 4 FIELDS)
+====================================================== */
+
+const EXCEL_KEY = "earnings_excel_data";
+const EXCEL_DATE = "earnings_excel_date";
+
+function needsExcelRefresh() {
+  return localStorage.getItem(EXCEL_DATE) !== simpleDate(new Date());
+}
+
+function buildExcelData(rawList) {
+  return rawList.map(d => ({
+    "User": d.user || "",
+    "Current Earnings": d.currentEarnings || "",
+    "Last Month Earnings": d.lastMonthEarnings || "",
+    "Next Transfer Date": d.nextTransferDate || d.lastTransferDate || "—"
+  }));
+}
+
+document.getElementById("downloadExcel").onclick = () => {
+  const today = simpleDate(new Date());
+
+  if (needsExcelRefresh()) {
+    const raw = loadFromCache();
+    if (raw.length === 0) {
+      alert("Data not loaded yet.");
+      return;
+    }
+
+    const rows = buildExcelData(raw);
+    localStorage.setItem(EXCEL_KEY, JSON.stringify(rows));
+    localStorage.setItem(EXCEL_DATE, today);
+  }
+
+  const excelRows = JSON.parse(localStorage.getItem(EXCEL_KEY) || "[]");
+  if (excelRows.length === 0) {
+    alert("No data available.");
+    return;
+  }
+
+  const ws = XLSX.utils.json_to_sheet(excelRows);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Earnings");
+
+  XLSX.writeFile(wb, `Earnings_${today}.xlsx`);
+};
+
+/* START */
 buildTable();
 
 </script>
@@ -241,52 +270,42 @@ body {
   background: #f8fafc;
   padding: 20px;
 }
-
 h1 {
   text-align: center;
   color: #0f62fe;
 }
-
 #loading {
-  text-align: center;
-  margin-top: 10px;
-  color: #6b7280;
-  font-size: 15px;
+  text-align:center;
+  margin-top:10px;
+  color:#6b7280;
 }
-
 #total {
-  text-align: center;
-  font-size: 18px;
-  font-weight: bold;
-  margin-top: 15px;
+  text-align:center;
+  font-size:18px;
+  font-weight:bold;
+  margin-top:15px;
 }
-
 #next-sync {
-  text-align: center;
-  font-size: 14px;
-  color: #6b7280;
-  margin-bottom: 10px;
+  text-align:center;
+  color:#6b7280;
+  margin-bottom:10px;
 }
-
 table {
-  width: 95%;
-  margin: 15px auto;
-  background: white;
-  border-radius: 8px;
-  border-collapse: collapse;
-  box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+  width:95%;
+  margin:15px auto;
+  background:white;
+  border-radius:8px;
+  border-collapse:collapse;
+  box-shadow:0 2px 6px rgba(0,0,0,0.15);
 }
-
 th, td {
-  padding: 10px;
-  border-bottom: 1px solid #e5e7eb;
+  padding:10px;
+  border-bottom:1px solid #e5e7eb;
 }
-
 th {
-  background: #0f62fe;
-  color: white;
+  background:#0f62fe;
+  color:white;
 }
-
 .del-btn {
   background:#dc2626;
   color:white;
@@ -294,10 +313,21 @@ th {
   border:none;
   border-radius:6px;
   cursor:pointer;
-  font-size:12px;
 }
-.del-btn:hover {
-  background:#b91c1c;
+.del-btn:hover { background:#b91c1c; }
+
+.excel-btn {
+  background:#0d9488;
+  color:white;
+  padding:8px 14px;
+  border:none;
+  border-radius:6px;
+  cursor:pointer;
+  font-size:14px;
+  font-weight:600;
+}
+.excel-btn:hover {
+  background:#0f766e;
 }
 </style>
 
@@ -309,6 +339,10 @@ th {
 <div id="loading">Loading Earnings…</div>
 <div id="total"></div>
 <div id="next-sync"></div>
+
+<div style="text-align:center;margin-bottom:15px;">
+  <button id="downloadExcel" class="excel-btn">📥 Download Today’s Excel</button>
+</div>
 
 <table>
   <thead>
