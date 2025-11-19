@@ -4,7 +4,6 @@
 <meta charset="UTF-8">
 <title>💰 MTurk Earnings Monitor (Daily Read-Only)</title>
 
-<!-- SheetJS for Excel -->
 <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
 
 <script type="module">
@@ -34,10 +33,9 @@ const earningsConfig = {
 };
 
 /* ======================================================
-   FORCE LONG POLLING (REQUIRED ON TIINYHOST)
+   FORCE LONG POLLING (fix for TiinyHost)
 ====================================================== */
 const earningsApp = initializeApp(earningsConfig, "earningsApp");
-
 const earningsDB = initializeFirestore(earningsApp, {
   experimentalForceLongPolling: true,
   useFetchStreams: false
@@ -52,47 +50,44 @@ const nextSyncEl = document.getElementById("next-sync");
 const tbody     = document.getElementById("data-body");
 
 /* ======================================================
-   MIDNIGHT DAILY SYNC LOGIC
+   MIDNIGHT SYNC LOGIC
 ====================================================== */
 const CACHE_KEY = "earnings_cache_data";
 const SYNC_KEY  = "earnings_last_sync_date";
 
-function simpleDate(d) {
-  return d.toISOString().slice(0, 10);
+function today() {
+  return new Date().toISOString().slice(0,10);
 }
 
 function needsSync() {
-  const last = localStorage.getItem(SYNC_KEY);
-  if (!last) return true;
-  return simpleDate(new Date()) !== last;
+  return localStorage.getItem(SYNC_KEY) !== today();
 }
 
 function markSynced() {
-  localStorage.setItem(SYNC_KEY, simpleDate(new Date()));
+  localStorage.setItem(SYNC_KEY, today());
 }
 
 /* ======================================================
-   NEXT SYNC COUNTDOWN
+   COUNTDOWN TO NEXT SYNC
 ====================================================== */
 function updateCountdown() {
   const now = new Date();
-  const next = new Date();
-  next.setHours(24, 0, 0, 0);
+  const midnight = new Date();
+  midnight.setHours(24, 0, 0, 0);
 
-  const diff = next - now;
-  const hrs = Math.floor(diff / (1000 * 60 * 60));
-  const mins = Math.floor((diff / (1000 * 60)) % 60);
+  const diff = midnight - now;
+  const h = Math.floor(diff / (1000*60*60));
+  const m = Math.floor((diff / (1000*60)) % 60);
 
-  nextSyncEl.innerHTML =
-    `Next automatic sync at: <b>12:00 AM</b> (in ${hrs}h ${mins}m)`;
+  nextSyncEl.innerHTML = `Next sync at <b>12:00 AM</b> (in ${h}h ${m}m)`;
 }
-setInterval(updateCountdown, 60 * 1000);
+setInterval(updateCountdown, 60000);
 updateCountdown();
 
 /* ======================================================
-   LOAD MAIN CSV (for displaying qualified users)
+   MAIN CSV (Qualified Users)
 ====================================================== */
-async function loadCSV() {
+async function loadMainCSV() {
   const res = await fetch(
     "https://docs.google.com/spreadsheets/d/1mf2-AQ59CuboAWz8Fle3qXTFfAI3cnB7mrkqQF1lyCw/export?format=csv&gid=0"
   );
@@ -102,16 +97,17 @@ async function loadCSV() {
   const users = new Set();
   const workers = new Set();
 
-  for (let i = 1; i < lines.length; i++) {
-    const [u, w] = lines[i].split(",");
+  for (let i=1;i<lines.length;i++) {
+    const [u,w] = lines[i].split(",");
     if (u) users.add(u.trim());
     if (w) workers.add(w.trim());
   }
-  return { users, workers };
+
+  return {users, workers};
 }
 
 /* ======================================================
-   LOAD TEAM CSV (EXCEL EXPORT ONLY)
+   TEAM CSV (Excel Export Only)
 ====================================================== */
 async function loadTeamCSV() {
   const res = await fetch(
@@ -120,102 +116,100 @@ async function loadTeamCSV() {
   const text = await res.text();
 
   const lines = text.split("\n").filter(Boolean);
-  const teamUsers = new Set();
+  const mapUserToWorker = new Map();
 
-  for (let i = 1; i < lines.length; i++) {
-    const user = lines[i].split(",")[0];
-    if (user) teamUsers.add(user.trim());
+  for (let i=1;i<lines.length;i++){
+    const [user, worker] = lines[i].split(",");
+    if (user && worker) {
+      mapUserToWorker.set(user.trim(), worker.trim());
+    }
   }
-  return teamUsers;
+
+  return mapUserToWorker;  // Map(User → WorkerID)
 }
 
 /* ======================================================
-   FIRESTORE READ (DAILY)
+   FIRESTORE READ (Daily)
 ====================================================== */
 async function fetchFromFirestore() {
   const snap = await getDocs(collection(earningsDB, "earnings_logs"));
   const arr = [];
-  snap.forEach(doc => arr.push({ id: doc.id, ...doc.data() }));
+  snap.forEach(doc => arr.push({id: doc.id, ...doc.data()}));
 
   localStorage.setItem(CACHE_KEY, JSON.stringify(arr));
   markSynced();
   return arr;
 }
 
-function loadFromCache() {
-  const raw = localStorage.getItem(CACHE_KEY);
-  return raw ? JSON.parse(raw) : [];
+function loadCache() {
+  return JSON.parse(localStorage.getItem(CACHE_KEY) || "[]");
 }
 
 /* ======================================================
-   BUILD TABLE
+   BUILD TABLE (DISPLAY)
 ====================================================== */
 async function buildTable() {
   loadingEl.style.display = "block";
 
-  const { users, workers } = await loadCSV();
-  const earningsData = needsSync() ? await fetchFromFirestore() : loadFromCache();
+  const {users, workers} = await loadMainCSV();
+  const raw = needsSync() ? await fetchFromFirestore() : loadCache();
 
   tbody.innerHTML = "";
   let total = 0;
-  const qualifying = [];
+  const final = [];
 
-  for (const d of earningsData) {
+  for (const d of raw) {
     const user = (d.user || "").trim();
     const wid  = (d.workerId || "").trim();
 
-    const current  = parseFloat(d.currentEarnings) || 0;
-    const transfer = parseFloat(d.lastTransferAmount) || 0;
-    const month    = parseFloat(d.lastMonthEarnings) || 0;
+    const curr = parseFloat(d.currentEarnings) || 0;
+    const lt   = parseFloat(d.lastTransferAmount) || 0;
+    const lm   = parseFloat(d.lastMonthEarnings) || 0;
 
-    let amt =
-      current > 0 ? current :
-      transfer > 0 ? transfer :
-      month > 0 ? month : 0;
-
+    let amt = curr>0 ? curr : lt>0 ? lt : lm>0 ? lm : 0;
     if (amt < 8) continue;
+
     if (!users.has(user) && !workers.has(wid)) continue;
 
     const next = d.nextTransferDate || d.lastTransferDate || "—";
 
     let status = "Not Yet";
-    if (transfer > current && transfer >= 8) {
+    if (lt > curr && lt >= 8) {
       status = "Transferred";
-      amt = transfer;
+      amt = lt;
     }
 
-    qualifying.push({ id:d.id, user, wid, amt, next, status });
+    final.push({id:d.id, user, wid, amt, next, status});
     total += amt;
   }
 
-  qualifying.sort((a,b)=> (a.status === "Transferred" ? -1 : 1));
+  final.sort((a,b)=> a.status==="Transferred" ? -1 : 1);
 
   totalEl.innerHTML =
-    `Total Earnings (≥ $8 Users): <b>$${total.toFixed(2)}</b> (${qualifying.length} users)`;
+    `Total Earnings (≥ $8): <b>$${total.toFixed(2)}</b> (${final.length} users)`;
 
-  for (const q of qualifying) {
+  for (const x of final){
     const tr = document.createElement("tr");
     tr.innerHTML = `
-      <td>${q.user}</td>
-      <td>${q.wid}</td>
-      <td style="color:#15803d;font-weight:bold">${q.amt.toFixed(2)}</td>
-      <td>${q.next}</td>
-      <td style="font-weight:bold;color:${q.status==="Transferred" ? "#b91c1c" : "#065f46"}">
-        ${q.status}
+      <td>${x.user}</td>
+      <td>${x.wid}</td>
+      <td style="font-weight:bold;color:#15803d">${x.amt.toFixed(2)}</td>
+      <td>${x.next}</td>
+      <td style="font-weight:bold;color:${x.status==="Transferred" ? "#b91c1c":"#065f46"}">
+        ${x.status}
       </td>
-      <td>
-        ${q.status==="Transferred"
-          ? `<button class="del-btn" data-id="${q.id}">🗑 Delete</button>`
-          : "—"}
-      </td>
+      <td>${
+        x.status==="Transferred"
+          ? `<button class="del" data-id="${x.id}">🗑 Delete</button>`
+          : "—"
+      }</td>
     `;
 
-    const btn = tr.querySelector(".del-btn");
-    if (btn) {
+    const btn = tr.querySelector(".del");
+    if (btn){
       btn.onclick = async () => {
-        if (!confirm(`Delete ${q.user}?`)) return;
-
-        await deleteDoc(doc(earningsDB, "earnings_logs", q.id));
+        if (!confirm(`Delete ${x.user}?`)) return;
+        await deleteDoc(doc(earningsDB, "earnings_logs", x.id));
         localStorage.removeItem(CACHE_KEY);
         localStorage.removeItem(SYNC_KEY);
         alert("Deleted!");
@@ -230,63 +224,62 @@ async function buildTable() {
 }
 
 /* ======================================================
-   EXCEL EXPORT (ONLY TEAM USERS)
+   EXCEL EXPORT (Team CSV → WorkerID → Firestore)
 ====================================================== */
 
-const EXCEL_KEY = "earnings_excel_data";
-const EXCEL_DATE = "earnings_excel_date";
+const EXCEL_KEY = "team_excel_cache";
+const EXCEL_DATE = "team_excel_date";
 
-function needsExcelRefresh() {
-  return localStorage.getItem(EXCEL_DATE) !== simpleDate(new Date());
+function needsExcel() {
+  return localStorage.getItem(EXCEL_DATE) !== today();
 }
 
-function buildExcelRows(rawList, teamUsers) {
+function buildExcelRows(raw, mapTeam) {
   const rows = [];
 
-  for (const d of rawList) {
-    const user = (d.user || "").trim();
-    if (!teamUsers.has(user)) continue;
+  for (const [user, worker] of mapTeam.entries()){
+    const match = raw.find(r => (r.workerId || "").trim() === worker);
+
+    if (!match) continue;
 
     rows.push({
       "User": user,
-      "Current Earnings": d.currentEarnings || "",
-      "Last Month Earnings": d.lastMonthEarnings || "",
-      "Next Transfer Date": d.nextTransferDate || d.lastTransferDate || "—"
+      "Current Earnings": match.currentEarnings || "",
+      "Last Month Earnings": match.lastMonthEarnings || "",
+      "Next Transfer Date": match.nextTransferDate || match.lastTransferDate || "—"
     });
   }
+
   return rows;
 }
 
 document.getElementById("downloadExcel").onclick = async () => {
-  const today = simpleDate(new Date());
-
-  if (needsExcelRefresh()) {
-    const teamUsers = await loadTeamCSV();
-    const raw = loadFromCache();
+  if (needsExcel()){
+    const mapTeam = await loadTeamCSV();
+    const raw = loadCache();
 
     if (raw.length === 0) {
-      alert("Data not loaded yet.");
+      alert("Data not ready yet.");
       return;
     }
 
-    const rows = buildExcelRows(raw, teamUsers);
+    const rows = buildExcelRows(raw, mapTeam);
 
     localStorage.setItem(EXCEL_KEY, JSON.stringify(rows));
-    localStorage.setItem(EXCEL_DATE, today);
+    localStorage.setItem(EXCEL_DATE, today());
   }
 
-  const excelRows = JSON.parse(localStorage.getItem(EXCEL_KEY) || "[]");
-
-  if (excelRows.length === 0) {
-    alert("No data available for export.");
+  const rows = JSON.parse(localStorage.getItem(EXCEL_KEY) || "[]");
+  if (rows.length === 0){
+    alert("No matching data found.");
     return;
   }
 
-  const ws = XLSX.utils.json_to_sheet(excelRows);
+  const ws = XLSX.utils.json_to_sheet(rows);
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "Team Earnings");
 
-  XLSX.writeFile(wb, `Team_Earnings_${today}.xlsx`);
+  XLSX.writeFile(wb, `Team_Earnings_${today()}.xlsx`);
 };
 
 /* START */
@@ -295,30 +288,31 @@ buildTable();
 </script>
 
 <style>
-body {
-  font-family: "Segoe UI", Arial;
-  background: #f8fafc;
-  padding: 20px;
-}
-h1 { text-align: center; color: #0f62fe; }
+body { font-family:"Segoe UI",Arial; background:#f8fafc; padding:20px; }
+h1 { text-align:center; color:#0f62fe; }
 #loading { text-align:center; color:#6b7280; margin-top:10px; }
 #total { text-align:center; font-size:18px; font-weight:bold; margin-top:15px; }
-#next-sync { text-align:center; color:#6b7280; margin-bottom:10px; }
+#next-sync { text-align:center; margin-bottom:10px; color:#6b7280; }
+
 table {
-  width:95%; margin:15px auto; background:white;
+  width:95%; margin:15px auto; background:#fff;
   border-radius:8px; border-collapse:collapse;
   box-shadow:0 2px 6px rgba(0,0,0,0.15);
 }
-th, td { padding:10px; border-bottom:1px solid #e5e7eb; }
-th { background:#0f62fe; color:white; }
-.del-btn {
-  background:#dc2626; color:white; padding:4px 8px;
-  border:none; border-radius:6px; cursor:pointer;
+th,td { padding:10px; border-bottom:1px solid #e5e7eb; }
+th { background:#0f62fe; color:#fff; }
+
+.del {
+  background:#dc2626; color:white;
+  border:none; padding:5px 10px;
+  border-radius:6px; cursor:pointer;
 }
-.del-btn:hover { background:#b91c1c; }
+.del:hover { background:#b91c1c; }
+
 .excel-btn {
-  background:#0d9488; color:white; padding:8px 14px;
-  border:none; border-radius:6px; cursor:pointer;
+  background:#0d9488; color:white;
+  padding:8px 14px; border:none;
+  border-radius:6px; cursor:pointer;
   font-size:14px; font-weight:600;
 }
 .excel-btn:hover { background:#0f766e; }
@@ -334,7 +328,7 @@ th { background:#0f62fe; color:white; }
 <div id="next-sync"></div>
 
 <div style="text-align:center;margin-bottom:15px;">
-  <button id="downloadExcel" class="excel-btn">📥 Download Today’s Excel</button>
+  <button id="downloadExcel" class="excel-btn">📥 Download Today's Excel</button>
 </div>
 
 <table>
