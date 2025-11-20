@@ -17,7 +17,7 @@ import {
   initializeFirestore,
   collection,
   getDocs,
-  deleteDoc,
+  updateDoc,
   doc
 } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
@@ -45,31 +45,25 @@ const earningsDB = initializeFirestore(earningsApp, {
 /* ======================================================
    BASIC ELEMENTS
 ====================================================== */
-const loadingEl  = document.getElementById("loading");
-const totalEl    = document.getElementById("total");
-const tbody      = document.getElementById("data-body");
+const loadingEl = document.getElementById("loading");
+const totalEl = document.getElementById("total");
+const tbody = document.getElementById("data-body");
 const nextSyncEl = document.getElementById("next-sync");
 
 /* ======================================================
    DAILY MIDNIGHT SYNC
 ====================================================== */
 const CACHE_KEY = "earnings_cache_data";
-const SYNC_KEY  = "earnings_last_sync";
+const SYNC_KEY = "earnings_last_sync";
 
-function today() {
-  return new Date().toISOString().slice(0,10);
-}
+function today() { return new Date().toISOString().slice(0,10); }
 
-function needsSync() {
-  return localStorage.getItem(SYNC_KEY) !== today();
-}
+function needsSync() { return localStorage.getItem(SYNC_KEY) !== today(); }
 
-function markSynced() {
-  localStorage.setItem(SYNC_KEY, today());
-}
+function markSynced() { localStorage.setItem(SYNC_KEY, today()); }
 
 /* ======================================================
-   COUNTDOWN
+   MIDNIGHT COUNTDOWN
 ====================================================== */
 function updateCountdown() {
   const now = new Date();
@@ -92,13 +86,12 @@ async function loadMainCSV() {
   const res = await fetch(
     "https://docs.google.com/spreadsheets/d/1mf2-AQ59CuboAWz8Fle3qXTFfAI3cnB7mrkqQF1lyCw/export?format=csv&gid=0"
   );
-  const text  = await res.text();
-  const lines = text.split("\n").filter(Boolean);
+  const lines = (await res.text()).split("\n").filter(Boolean);
 
-  const users   = new Set();
+  const users = new Set();
   const workers = new Set();
 
-  for (let i=1;i<lines.length;i++){
+  for (let i=1; i<lines.length; i++){
     const [u,w] = lines[i].split(",");
     if (u) users.add(u.trim());
     if (w) workers.add(w.trim());
@@ -107,33 +100,11 @@ async function loadMainCSV() {
 }
 
 /* ======================================================
-   TEAM CSV (Excel Export)
-   (currently same sheet; can change URL later if needed)
-====================================================== */
-async function loadTeamCSV() {
-  const res = await fetch(
-    "https://docs.google.com/spreadsheets/d/1mf2-AQ59CuboAWz8Fle3qXTFfAI3cnB7mrkqQF1lyCw/export?format=csv&gid=0"
-  );
-  const text  = await res.text();
-  const lines = text.split("\n").filter(Boolean);
-
-  const teamMap = new Map(); // User → workerId
-
-  for (let i=1;i<lines.length;i++){
-    const [user, wid] = lines[i].split(",");
-    if (user && wid){
-      teamMap.set(user.trim(), wid.trim());
-    }
-  }
-  return teamMap;
-}
-
-/* ======================================================
    FIRESTORE (Daily Cache)
 ====================================================== */
 async function fetchFromFirestore() {
   const snap = await getDocs(collection(earningsDB, "earnings_logs"));
-  const arr  = [];
+  const arr = [];
   snap.forEach(d => arr.push({ id: d.id, ...d.data() }));
 
   localStorage.setItem(CACHE_KEY, JSON.stringify(arr));
@@ -146,7 +117,22 @@ function loadCache() {
 }
 
 /* ======================================================
-   BUILD TABLE
+   DATE CHECK (This Month)
+====================================================== */
+function isThisMonth(dateStr){
+  if (!dateStr) return false;
+  const p = dateStr.split("/");
+  if (p.length !== 3) return false;
+
+  const m = parseInt(p[0]);
+  const y = 2000 + parseInt(p[2]);
+  const now = new Date();
+
+  return (m === (now.getMonth()+1) && y === now.getFullYear());
+}
+
+/* ======================================================
+   BUILD TABLE + LOGIC
 ====================================================== */
 async function buildTable() {
   loadingEl.style.display = "block";
@@ -155,221 +141,114 @@ async function buildTable() {
   const all = needsSync() ? await fetchFromFirestore() : loadCache();
 
   tbody.innerHTML = "";
-  let total  = 0;
+  let total = 0;
   const result = [];
-
-  function isThisMonth(dateStr){
-    if (!dateStr) return false;
-    const p = dateStr.split("/");
-    if (p.length !== 3) return false;
-
-    const m = parseInt(p[0], 10);
-    const y = 2000 + parseInt(p[2], 10);
-    const now = new Date();
-
-    return (m === (now.getMonth()+1) && y === now.getFullYear());
-  }
 
   for (const d of all){
 
     const user = (d.user || "").trim();
-    const wid  = (d.workerId || "").trim();
+    const wid = (d.workerId || "").trim();
 
-    if (!users.has(user) && !workers.has(wid)) continue;
-
-    const curr = parseFloat(d.currentEarnings)    || 0;
-    const lt   = parseFloat(d.lastTransferAmount) || 0;
-    const lm   = parseFloat(d.lastMonthEarnings)  || 0;
+    const curr = parseFloat(d.currentEarnings) || 0;
+    const lt = parseFloat(d.lastTransferAmount) || 0;
+    const lm = parseFloat(d.lastMonthEarnings) || 0;
 
     let amt = curr>0 ? curr : lt>0 ? lt : lm>0 ? lm : 0;
-    let next   = d.nextTransferDate || d.lastTransferDate || "—";
+    if (!users.has(user) && !workers.has(wid)) continue;
+
+    let next = d.nextTransferDate || d.lastTransferDate || "—";
     let status = "Not Yet";
 
-    // RULE A: lastTransferDate THIS month → Transferred $lt
-    if (isThisMonth(d.lastTransferDate) && lt >= 8){
+    /* RULE 1: earnings dropped */
+    if (lt > curr && lt >= 8) {
       status = `Transferred $${lt.toFixed(2)}`;
-      amt    = lt;
-    }
-    // RULE B: earnings dropped → Transferred $lt
-    else if (lt > curr && lt >= 8){
-      status = `Transferred $${lt.toFixed(2)}`;
-      amt    = lt;
+      amt = lt;
     }
 
-    // Only keep ≥ 8
+    /* RULE 2: transfer happened this month */
+    else if (isThisMonth(d.lastTransferDate) && lt >= 8){
+      status = `Transferred $${lt.toFixed(2)}`;
+      amt = lt;
+    }
+
     if (amt < 8) continue;
 
     result.push({id:d.id, user, wid, amt, next, status});
     total += amt;
   }
 
-  // Transferred on top
+  /* Transferred → top */
   result.sort((a,b)=> a.status.includes("Transferred") ? -1 : 1);
 
   totalEl.innerHTML =
     `Total Earnings (≥ $8): <b>$${total.toFixed(2)}</b> (${result.length} users)`;
 
-  tbody.innerHTML = "";
-
   for (const r of result){
-    const isTransferred = r.status.includes("Transferred");
-
     const tr = document.createElement("tr");
+
     tr.innerHTML = `
-      <td style="text-align:center;">
-        ${isTransferred ? `<input type="checkbox" class="selRow" data-id="${r.id}">` : "—"}
-      </td>
+      <td><input type="checkbox" class="row-check" data-id="${r.id}"></td>
       <td>${r.user}</td>
       <td>${r.wid}</td>
       <td style="color:#15803d;font-weight:bold">${r.amt.toFixed(2)}</td>
       <td>${r.next}</td>
-      <td style="font-weight:bold;color:${isTransferred ? "#b91c1c" : "#065f46"}">
+      <td style="font-weight:bold;color:${r.status.includes("Transferred") ? "#b91c1c" : "#065f46"}">
         ${r.status}
       </td>
       <td>
-        ${
-          isTransferred
-          ? `<button class="del" data-id="${r.id}">🗑 Delete</button>`
-          : "—"
-        }
+        <button class="del" data-id="${r.id}">🗑</button>
       </td>
     `;
 
-    // per-row delete button (old behavior)
-    const btn = tr.querySelector(".del");
-    if (btn){
-      btn.onclick = async () => {
-        if (!confirm(`Delete ${r.user}?`)) return;
-        await deleteDoc(doc(earningsDB, "earnings_logs", r.id));
-        localStorage.removeItem(CACHE_KEY);
-        localStorage.removeItem(SYNC_KEY);
-        alert("Deleted!");
-        buildTable();
-      };
-    }
+    /* Single delete */
+    tr.querySelector(".del").onclick = async () => {
+      if (!confirm(`Remove transfer for ${r.user}?`)) return;
+
+      await updateDoc(doc(earningsDB, "earnings_logs", r.id), {
+        lastTransferAmount: "",
+        lastTransferDate: ""
+      });
+
+      localStorage.removeItem(CACHE_KEY);
+      localStorage.removeItem(SYNC_KEY);
+
+      alert("Removed from qualified users!");
+      buildTable();
+    };
 
     tbody.appendChild(tr);
   }
-
-  // reset selectAll + bulk delete button
-  const selectAll = document.getElementById("selectAll");
-  if (selectAll) selectAll.checked = false;
-  updateDeleteButton();
 
   loadingEl.style.display = "none";
 }
 
 /* ======================================================
-   EXCEL EXPORT (FINAL VERSION)
+   MULTI-DELETE (Clear transfer fields, not record)
 ====================================================== */
-const EXCEL_KEY  = "excel_cache";
-const EXCEL_DATE = "excel_cache_date";
+document.getElementById("multiDelete").onclick = async () => {
+  const items = [...document.querySelectorAll(".row-check:checked")];
 
-function needsExcel(){ return localStorage.getItem(EXCEL_DATE) !== today(); }
-
-function buildExcelRows(raw, teamMap){
-  const rows = [];
-
-  for (const [user, teamWid] of teamMap.entries()){
-
-    const match = raw.find(r =>
-      (r.workerId && r.workerId.trim() === teamWid) ||
-      (r.id       && r.id.trim()       === teamWid)
-    );
-
-    if (!match) continue;
-
-    rows.push({
-      "User":               user,
-      "Current Earnings":   match.currentEarnings    || "",
-      "Last Month Earnings":match.lastMonthEarnings  || "",
-      "Next Transfer Date": match.nextTransferDate   || match.lastTransferDate || "—",
-      "Last Transfer Amount": match.lastTransferAmount || ""
-    });
-  }
-
-  return rows;
-}
-
-document.getElementById("downloadExcel").onclick = async () => {
-
-  if (needsExcel()){
-    const teamMap = await loadTeamCSV();
-    const raw     = loadCache();
-
-    if (raw.length === 0){
-      alert("Data not ready yet.");
-      return;
-    }
-
-    const rows = buildExcelRows(raw, teamMap);
-    localStorage.setItem(EXCEL_KEY, JSON.stringify(rows));
-    localStorage.setItem(EXCEL_DATE, today());
-  }
-
-  const rows = JSON.parse(localStorage.getItem(EXCEL_KEY) || "[]");
-
-  if (rows.length === 0){
-    alert("No matching data found.");
+  if (items.length === 0){
+    alert("Select at least one user!");
     return;
   }
 
-  const ws = XLSX.utils.json_to_sheet(rows);
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, "Team Earnings");
+  if (!confirm(`Remove transfer for ${items.length} users?`)) return;
 
-  XLSX.writeFile(wb, `Team_Earnings_${today()}.xlsx`);
-};
-
-/* ======================================================
-   MULTI-DELETE LOGIC (checklist + Select All)
-====================================================== */
-
-function updateDeleteButton() {
-  const btn = document.getElementById("deleteSelected");
-  if (!btn) return;
-  const anyChecked = document.querySelectorAll(".selRow:checked").length > 0;
-  btn.disabled = !anyChecked;
-}
-
-// watch checkbox changes
-document.addEventListener("change", (e)=>{
-  if (e.target.classList.contains("selRow") ||
-      e.target.id === "selectAll") {
-    updateDeleteButton();
+  for (const c of items){
+    const id = c.dataset.id;
+    await updateDoc(doc(earningsDB, "earnings_logs", id), {
+      lastTransferAmount: "",
+      lastTransferDate: ""
+    });
   }
-});
 
-// Select All
-const selectAllEl = document.getElementById("selectAll");
-if (selectAllEl){
-  selectAllEl.addEventListener("click", () => {
-    const chk = selectAllEl.checked;
-    document.querySelectorAll(".selRow").forEach(x => x.checked = chk);
-    updateDeleteButton();
-  });
-}
+  localStorage.removeItem(CACHE_KEY);
+  localStorage.removeItem(SYNC_KEY);
 
-// Delete Selected
-const deleteSelectedBtn = document.getElementById("deleteSelected");
-if (deleteSelectedBtn){
-  deleteSelectedBtn.addEventListener("click", async () => {
-    const selected = [...document.querySelectorAll(".selRow:checked")];
-    if (selected.length === 0) return;
-
-    if (!confirm(`Delete ${selected.length} transferred user(s)?`)) return;
-
-    for (const s of selected){
-      const id = s.dataset.id;
-      await deleteDoc(doc(earningsDB, "earnings_logs", id));
-    }
-
-    localStorage.removeItem(CACHE_KEY);
-    localStorage.removeItem(SYNC_KEY);
-    alert("Selected users deleted!");
-    buildTable();
-  });
-}
+  alert("Selected users removed from qualified!");
+  buildTable();
+};
 
 /* START */
 buildTable();
@@ -377,75 +256,34 @@ buildTable();
 </script>
 
 <style>
-body {
-  font-family:"Segoe UI",Arial;
-  background:#f8fafc;
-  padding:20px;
-}
-h1 {
-  text-align:center;
-  color:#0f62fe;
-}
-#loading {
-  text-align:center;
-  color:#6b7280;
-  margin-top:10px;
-}
-#total {
-  text-align:center;
-  font-size:18px;
-  font-weight:bold;
-  margin-top:15px;
-}
-#next-sync {
-  text-align:center;
-  margin-bottom:10px;
-  color:#6b7280;
-}
+body { font-family:"Segoe UI",Arial; background:#f8fafc; padding:20px; }
+h1 { text-align:center; color:#0f62fe; }
+#loading { text-align:center; color:#6b7280; margin-top:10px; }
+#total { text-align:center; font-size:18px; font-weight:bold; margin-top:15px; }
+#next-sync { text-align:center; margin-bottom:10px; color:#6b7280; }
+
 table {
-  width:95%;
-  margin:15px auto;
-  background:#fff;
-  border-radius:8px;
-  border-collapse:collapse;
+  width:95%; margin:15px auto; background:#fff;
+  border-radius:8px; border-collapse:collapse;
   box-shadow:0 2px 6px rgba(0,0,0,0.12);
 }
-th,td {
-  padding:10px;
-  border-bottom:1px solid #e5e7eb;
-}
-th {
-  background:#0f62fe;
-  color:white;
-}
+th,td { padding:10px; border-bottom:1px solid #e5e7eb; }
+th { background:#0f62fe; color:white; }
+
 .del {
-  background:#dc2626;
-  color:white;
-  padding:5px 10px;
-  border:none;
-  border-radius:6px;
-  cursor:pointer;
+  background:#dc2626; color:white;
+  padding:5px 10px; border:none;
+  border-radius:6px; cursor:pointer;
 }
-.del[disabled] {
-  opacity:0.5;
-  cursor:not-allowed;
+.del:hover { background:#b91c1c; }
+
+.multi-btn {
+  background:#b91c1c; color:white;
+  padding:8px 14px; border:none;
+  border-radius:6px; cursor:pointer;
+  font-size:14px; font-weight:600;
 }
-.del:hover:not([disabled]) {
-  background:#b91c1c;
-}
-.excel-btn {
-  background:#0d9488;
-  color:white;
-  padding:8px 14px;
-  border:none;
-  border-radius:6px;
-  cursor:pointer;
-  font-size:14px;
-  font-weight:600;
-}
-.excel-btn:hover {
-  background:#0f766e;
-}
+.multi-btn:hover { background:#7f1d1d; }
 </style>
 
 </head>
@@ -457,24 +295,14 @@ th {
 <div id="total"></div>
 <div id="next-sync"></div>
 
-<div style="text-align:center;margin:10px 0;">
-  <button id="downloadExcel" class="excel-btn">
-    📥 Download Today’s Excel For all Users
-  </button>
-</div>
-
-<div style="text-align:center;margin-bottom:10px;">
-  <button id="deleteSelected" class="del" disabled>
-    🗑 Delete Selected
-  </button>
+<div style="text-align:center;margin-bottom:15px;">
+  <button id="multiDelete" class="multi-btn">🗑 Delete Selected Transfers</button>
 </div>
 
 <table>
   <thead>
     <tr>
-      <th style="text-align:center;">
-        <input type="checkbox" id="selectAll">
-      </th>
+      <th>Select</th>
       <th>User</th>
       <th>Worker ID</th>
       <th>Earnings</th>
