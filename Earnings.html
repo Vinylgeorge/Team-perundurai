@@ -4,6 +4,9 @@
 <meta charset="UTF-8">
 <title>💰 MTurk Earnings Monitor (Daily Read-Only)</title>
 
+<!-- SheetJS for Excel export -->
+<script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
+
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
 import {
@@ -233,7 +236,11 @@ async function buildTable() {
       next,
       status,
       lastTransferAmount: d.lastTransferAmount || "",
-      lastTransferDate: d.lastTransferDate || ""
+      lastTransferDate: d.lastTransferDate || "",
+      currentEarnings: d.currentEarnings || "",
+      lastMonthEarnings: d.lastMonthEarnings || "",
+      nextTransferDate: d.nextTransferDate || "",
+      workerId: wid
     });
 
     total += amt;
@@ -337,14 +344,13 @@ async function multiDeleteTransfers() {
     const match = statusText.match(/\$([\d.]+)/);
     const amt   = match ? match[1] : "";
 
-    // we can't know exact date from table, so keep empty (or could be from snapshot)
     history = history.filter(e => e.id !== id);
     history.push({
       id,
       user,
       workerId: wid,
       lastTransferAmount: amt,
-      lastTransferDate: ""   // unknown from UI, but amount restored
+      lastTransferDate: ""   // unknown from UI
     });
 
     await updateDoc(doc(earningsDB, "earnings_logs", id), {
@@ -364,6 +370,70 @@ async function multiDeleteTransfers() {
 }
 
 /* ======================================================
+   TEAM CSV (Excel Export)
+====================================================== */
+async function loadTeamCSV() {
+  const res = await fetch(
+    "https://docs.google.com/spreadsheets/d/1mf2-AQ59CuboAWz8Fle3qXTFfAI3cnB7mrkqQF1lyCw/export?format=csv&gid=0"
+  );
+  const text  = await res.text();
+  const lines = text.split("\n").filter(Boolean);
+
+  const teamMap = new Map(); // User → workerId
+
+  for (let i=1;i<lines.length;i++){
+    const [user, wid] = lines[i].split(",");
+    if (user && wid){
+      teamMap.set(user.trim(), wid.trim());
+    }
+  }
+  return teamMap;
+}
+
+function buildExcelRows(rawData, teamMap) {
+  const rows = [];
+
+  for (const [user, wid] of teamMap.entries()) {
+    const match = rawData.find(r => (r.workerId || "").trim() === wid);
+    if (!match) continue;
+
+    rows.push({
+      "User": user,
+      "Worker ID": wid,
+      "Current Earnings": match.currentEarnings || "",
+      "Last Month Earnings": match.lastMonthEarnings || "",
+      "Next Transfer Date": match.nextTransferDate || match.lastTransferDate || "—",
+      "Last Transfer Amount": match.lastTransferAmount || ""
+    });
+  }
+
+  return rows;
+}
+
+async function exportExcelReport() {
+  const teamMap = await loadTeamCSV();
+  const all = needsSync() ? await fetchFromFirestore() : loadCache();
+
+  if (!all || all.length === 0) {
+    alert("No Firestore data available.");
+    return;
+  }
+
+  const rows = buildExcelRows(all, teamMap);
+
+  if (rows.length === 0) {
+    alert("No matching records found for team sheet.");
+    return;
+  }
+
+  const ws = XLSX.utils.json_to_sheet(rows);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Earnings");
+
+  XLSX.writeFile(wb, `Daily_Earnings_Report_${today()}.xlsx`);
+}
+
+/* ======================================================
    UNDO PANEL HANDLING
 ====================================================== */
 async function handleUndoClick(idx) {
@@ -378,7 +448,6 @@ async function handleUndoClick(idx) {
     lastTransferDate: lastTransferDate || ""
   });
 
-  // remove from history, update UI
   history.splice(idx,1);
   saveUndoHistory(history);
   updateUndoButton();
@@ -400,6 +469,7 @@ window.addEventListener("DOMContentLoaded", () => {
   setInterval(() => updateCountdown(nextSyncEl), 60000);
 
   document.getElementById("multiDelete").onclick = multiDeleteTransfers;
+  document.getElementById("downloadExcel").onclick = exportExcelReport;
 
   const undoBtn = document.getElementById("undoBtn");
   const undoPanel = document.getElementById("undoPanel");
@@ -482,7 +552,7 @@ th {
 .del:hover {
   background:#b91c1c;
 }
-.multi-btn, .undo-btn {
+.multi-btn, .undo-btn, .excel-btn {
   background:#0d9488;
   color:#ffffff;
   padding:8px 14px;
@@ -493,7 +563,7 @@ th {
   font-weight:600;
   margin:0 5px;
 }
-.multi-btn:hover, .undo-btn:hover {
+.multi-btn:hover, .undo-btn:hover, .excel-btn:hover {
   background:#0f766e;
 }
 .undo-btn[disabled] {
@@ -583,6 +653,7 @@ th {
 <div style="text-align:center;margin:10px 0 15px 0;">
   <button id="multiDelete" class="multi-btn">🗑 Delete Selected Transfers</button>
   <button id="undoBtn" class="undo-btn" disabled>⏪ Undo Deleted Transfers (0)</button>
+  <button id="downloadExcel" class="excel-btn">📥 Download Today’s Excel Report</button>
 </div>
 
 <table>
