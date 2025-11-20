@@ -4,14 +4,7 @@
 <meta charset="UTF-8">
 <title>💰 MTurk Earnings Monitor (Daily Read-Only)</title>
 
-<!-- SheetJS for Excel -->
-<script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
-
 <script type="module">
-
-/* ======================================================
-   IMPORT FIREBASE
-====================================================== */
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
 import {
   initializeFirestore,
@@ -33,9 +26,6 @@ const earningsConfig = {
   appId: "1:505786000194:web:40b9c9df75d3125f3a99cd"
 };
 
-/* ======================================================
-   TiinyHost FIX → FORCE LONG POLLING
-====================================================== */
 const earningsApp = initializeApp(earningsConfig, "earningsApp");
 const earningsDB = initializeFirestore(earningsApp, {
   experimentalForceLongPolling: true,
@@ -43,68 +33,71 @@ const earningsDB = initializeFirestore(earningsApp, {
 });
 
 /* ======================================================
-   BASIC ELEMENTS
-====================================================== */
-const loadingEl = document.getElementById("loading");
-const totalEl = document.getElementById("total");
-const tbody = document.getElementById("data-body");
-const nextSyncEl = document.getElementById("next-sync");
-
-/* ======================================================
-   DAILY MIDNIGHT SYNC
+   CONSTANTS
 ====================================================== */
 const CACHE_KEY = "earnings_cache_data";
-const SYNC_KEY = "earnings_last_sync";
-
-function today() { return new Date().toISOString().slice(0,10); }
-
-function needsSync() { return localStorage.getItem(SYNC_KEY) !== today(); }
-
-function markSynced() { localStorage.setItem(SYNC_KEY, today()); }
+const SYNC_KEY  = "earnings_last_sync";
+const UNDO_KEY  = "earnings_undo_history";
 
 /* ======================================================
-   MIDNIGHT COUNTDOWN
+   HELPERS
 ====================================================== */
-function updateCountdown() {
-  const now = new Date();
-  const next = new Date();
-  next.setHours(24,0,0,0);
-
-  const diff = next - now;
-  const h = Math.floor(diff/(1000*60*60));
-  const m = Math.floor((diff/(1000*60)) % 60);
-
-  nextSyncEl.innerHTML = `Next Sync: <b>12:00 AM</b> (in ${h}h ${m}m)`;
+function today() {
+  return new Date().toISOString().slice(0,10);
 }
-setInterval(updateCountdown, 60000);
-updateCountdown();
+
+function needsSync() {
+  return localStorage.getItem(SYNC_KEY) !== today();
+}
+
+function markSynced() {
+  localStorage.setItem(SYNC_KEY, today());
+}
+
+function isThisMonth(dateStr){
+  if (!dateStr) return false;
+  const p = dateStr.split("/");
+  if (p.length !== 3) return false;
+
+  const m = parseInt(p[0], 10);
+  const y = 2000 + parseInt(p[2], 10);
+  const now = new Date();
+
+  return (m === (now.getMonth()+1) && y === now.getFullYear());
+}
+
+function loadUndoHistory() {
+  return JSON.parse(localStorage.getItem(UNDO_KEY) || "[]");
+}
+
+function saveUndoHistory(list) {
+  localStorage.setItem(UNDO_KEY, JSON.stringify(list));
+}
 
 /* ======================================================
-   MAIN CSV (Qualified Users)
+   FIRESTORE READ + CSV QUALIFIED LIST
 ====================================================== */
 async function loadMainCSV() {
   const res = await fetch(
     "https://docs.google.com/spreadsheets/d/1mf2-AQ59CuboAWz8Fle3qXTFfAI3cnB7mrkqQF1lyCw/export?format=csv&gid=0"
   );
-  const lines = (await res.text()).split("\n").filter(Boolean);
+  const text  = await res.text();
+  const lines = text.split("\n").filter(Boolean);
 
-  const users = new Set();
+  const users   = new Set();
   const workers = new Set();
 
-  for (let i=1; i<lines.length; i++){
-    const [u,w] = lines[i].split(",");
+  for (let i=1;i<lines.length;i++){
+    const [u, w] = lines[i].split(",");
     if (u) users.add(u.trim());
     if (w) workers.add(w.trim());
   }
   return { users, workers };
 }
 
-/* ======================================================
-   FIRESTORE (Daily Cache)
-====================================================== */
 async function fetchFromFirestore() {
   const snap = await getDocs(collection(earningsDB, "earnings_logs"));
-  const arr = [];
+  const arr  = [];
   snap.forEach(d => arr.push({ id: d.id, ...d.data() }));
 
   localStorage.setItem(CACHE_KEY, JSON.stringify(arr));
@@ -117,104 +110,202 @@ function loadCache() {
 }
 
 /* ======================================================
-   DATE CHECK (This Month)
+   UI HELPERS
 ====================================================== */
-function isThisMonth(dateStr){
-  if (!dateStr) return false;
-  const p = dateStr.split("/");
-  if (p.length !== 3) return false;
+function updateCountdown(nextSyncEl) {
+  const now  = new Date();
+  const next = new Date();
+  next.setHours(24,0,0,0);
 
-  const m = parseInt(p[0]);
-  const y = 2000 + parseInt(p[2]);
-  const now = new Date();
+  const diff = next - now;
+  const h = Math.floor(diff / (1000*60*60));
+  const m = Math.floor((diff / (1000*60)) % 60);
 
-  return (m === (now.getMonth()+1) && y === now.getFullYear());
+  nextSyncEl.innerHTML = `Next Sync: <b>12:00 AM</b> (in ${h}h ${m}m)`;
+}
+
+function updateUndoButton() {
+  const list = loadUndoHistory();
+  const btn  = document.getElementById("undoBtn");
+  if (!btn) return;
+  btn.disabled = list.length === 0;
+  btn.textContent = `⏪ Undo Deleted Transfers (${list.length})`;
+}
+
+function renderUndoPanel() {
+  const panel = document.getElementById("undoPanel");
+  if (!panel) return;
+
+  const list = loadUndoHistory();
+  if (list.length === 0) {
+    panel.innerHTML = `
+      <div class="undo-header">No deleted transfers</div>
+      <div class="undo-body">Nothing to undo.</div>
+      <div class="undo-footer">
+        <button id="closeUndo" class="undo-close">Close</button>
+      </div>
+    `;
+    return;
+  }
+
+  let html = `
+    <div class="undo-header">Deleted Transfers</div>
+    <div class="undo-body">
+      <ul class="undo-list">
+  `;
+
+  list.forEach((e, idx) => {
+    const amt = e.lastTransferAmount || "0.00";
+    const dt  = e.lastTransferDate || "—";
+    const u   = e.user || "(unknown)";
+    const w   = e.workerId || e.id || "";
+
+    html += `
+      <li>
+        <span class="undo-entry">
+          <b>${u}</b> (${w}) – $${amt} on ${dt}
+        </span>
+        <button class="undo-item" data-idx="${idx}">Undo</button>
+      </li>
+    `;
+  });
+
+  html += `
+      </ul>
+    </div>
+    <div class="undo-footer">
+      <button id="closeUndo" class="undo-close">Close</button>
+    </div>
+  `;
+
+  panel.innerHTML = html;
 }
 
 /* ======================================================
-   BUILD TABLE + LOGIC
+   MAIN BUILD TABLE
 ====================================================== */
 async function buildTable() {
+  const loadingEl  = document.getElementById("loading");
+  const totalEl    = document.getElementById("total");
+  const tbody      = document.getElementById("data-body");
+
   loadingEl.style.display = "block";
 
-  const {users, workers} = await loadMainCSV();
+  const { users, workers } = await loadMainCSV();
   const all = needsSync() ? await fetchFromFirestore() : loadCache();
 
   tbody.innerHTML = "";
   let total = 0;
   const result = [];
 
-  for (const d of all){
-
+  for (const d of all) {
     const user = (d.user || "").trim();
-    const wid = (d.workerId || "").trim();
+    const wid  = (d.workerId || "").trim();
 
-    const curr = parseFloat(d.currentEarnings) || 0;
-    const lt = parseFloat(d.lastTransferAmount) || 0;
-    const lm = parseFloat(d.lastMonthEarnings) || 0;
-
-    let amt = curr>0 ? curr : lt>0 ? lt : lm>0 ? lm : 0;
     if (!users.has(user) && !workers.has(wid)) continue;
 
-    let next = d.nextTransferDate || d.lastTransferDate || "—";
+    const curr = parseFloat(d.currentEarnings) || 0;
+    const lt   = parseFloat(d.lastTransferAmount) || 0;
+    const lm   = parseFloat(d.lastMonthEarnings) || 0;
+
+    let amt = curr>0 ? curr : lt>0 ? lt : lm>0 ? lm : 0;
+    let next   = d.nextTransferDate || d.lastTransferDate || "—";
     let status = "Not Yet";
 
-    /* RULE 1: earnings dropped */
+    // RULE 1: earnings dropped
     if (lt > curr && lt >= 8) {
       status = `Transferred $${lt.toFixed(2)}`;
-      amt = lt;
+      amt    = lt;
     }
-
-    /* RULE 2: transfer happened this month */
-    else if (isThisMonth(d.lastTransferDate) && lt >= 8){
+    // RULE 2: transfer in this month
+    else if (isThisMonth(d.lastTransferDate) && lt >= 8) {
       status = `Transferred $${lt.toFixed(2)}`;
-      amt = lt;
+      amt    = lt;
     }
 
     if (amt < 8) continue;
 
-    result.push({id:d.id, user, wid, amt, next, status});
+    result.push({
+      id: d.id,
+      user,
+      wid,
+      amt,
+      next,
+      status,
+      lastTransferAmount: d.lastTransferAmount || "",
+      lastTransferDate: d.lastTransferDate || ""
+    });
+
     total += amt;
   }
 
-  /* Transferred → top */
+  // Transferred first
   result.sort((a,b)=> a.status.includes("Transferred") ? -1 : 1);
 
   totalEl.innerHTML =
     `Total Earnings (≥ $8): <b>$${total.toFixed(2)}</b> (${result.length} users)`;
 
-  for (const r of result){
-    const tr = document.createElement("tr");
+  tbody.innerHTML = "";
 
+  for (const r of result) {
+    const isTransferred = r.status.includes("Transferred");
+
+    const tr = document.createElement("tr");
     tr.innerHTML = `
-      <td><input type="checkbox" class="row-check" data-id="${r.id}"></td>
+      <td style="text-align:center;">
+        ${
+          isTransferred
+          ? `<input type="checkbox" class="row-check" data-id="${r.id}">`
+          : "—"
+        }
+      </td>
       <td>${r.user}</td>
       <td>${r.wid}</td>
       <td style="color:#15803d;font-weight:bold">${r.amt.toFixed(2)}</td>
       <td>${r.next}</td>
-      <td style="font-weight:bold;color:${r.status.includes("Transferred") ? "#b91c1c" : "#065f46"}">
+      <td style="font-weight:bold;color:${isTransferred ? "#b91c1c" : "#065f46"}">
         ${r.status}
       </td>
       <td>
-        <button class="del" data-id="${r.id}">🗑</button>
+        ${
+          isTransferred
+          ? `<button class="del" data-id="${r.id}">🗑</button>`
+          : "—"
+        }
       </td>
     `;
 
-    /* Single delete */
-    tr.querySelector(".del").onclick = async () => {
-      if (!confirm(`Remove transfer for ${r.user}?`)) return;
+    // Single delete handler
+    const delBtn = tr.querySelector(".del");
+    if (delBtn) {
+      delBtn.onclick = async () => {
+        if (!confirm(`Remove transfer for ${r.user}?`)) return;
 
-      await updateDoc(doc(earningsDB, "earnings_logs", r.id), {
-        lastTransferAmount: "",
-        lastTransferDate: ""
-      });
+        // store in undo history
+        let history = loadUndoHistory().filter(e => e.id !== r.id);
+        history.push({
+          id: r.id,
+          user: r.user,
+          workerId: r.wid,
+          lastTransferAmount: r.lastTransferAmount,
+          lastTransferDate: r.lastTransferDate
+        });
+        saveUndoHistory(history);
+        updateUndoButton();
 
-      localStorage.removeItem(CACHE_KEY);
-      localStorage.removeItem(SYNC_KEY);
+        // clear transfer fields
+        await updateDoc(doc(earningsDB, "earnings_logs", r.id), {
+          lastTransferAmount: "",
+          lastTransferDate: ""
+        });
 
-      alert("Removed from qualified users!");
-      buildTable();
-    };
+        localStorage.removeItem(CACHE_KEY);
+        localStorage.removeItem(SYNC_KEY);
+
+        alert("Removed from qualified users!");
+        buildTable();
+      };
+    }
 
     tbody.appendChild(tr);
   }
@@ -223,69 +314,263 @@ async function buildTable() {
 }
 
 /* ======================================================
-   MULTI-DELETE (Clear transfer fields, not record)
+   MULTI-DELETE TRANSFERS
 ====================================================== */
-document.getElementById("multiDelete").onclick = async () => {
-  const items = [...document.querySelectorAll(".row-check:checked")];
+async function multiDeleteTransfers() {
+  const checks = [...document.querySelectorAll(".row-check:checked")];
 
-  if (items.length === 0){
-    alert("Select at least one user!");
+  if (checks.length === 0) {
+    alert("Select at least one transferred user.");
     return;
   }
 
-  if (!confirm(`Remove transfer for ${items.length} users?`)) return;
+  if (!confirm(`Remove transfers for ${checks.length} user(s)?`)) return;
 
-  for (const c of items){
-    const id = c.dataset.id;
+  let history = loadUndoHistory();
+
+  for (const c of checks) {
+    const row  = c.closest("tr");
+    const id   = c.dataset.id;
+    const user = row.children[1].textContent.trim();
+    const wid  = row.children[2].textContent.trim();
+    const statusText = row.children[5].textContent.trim();
+    const match = statusText.match(/\$([\d.]+)/);
+    const amt   = match ? match[1] : "";
+
+    // we can't know exact date from table, so keep empty (or could be from snapshot)
+    history = history.filter(e => e.id !== id);
+    history.push({
+      id,
+      user,
+      workerId: wid,
+      lastTransferAmount: amt,
+      lastTransferDate: ""   // unknown from UI, but amount restored
+    });
+
     await updateDoc(doc(earningsDB, "earnings_logs", id), {
       lastTransferAmount: "",
       lastTransferDate: ""
     });
   }
 
+  saveUndoHistory(history);
+  updateUndoButton();
+
   localStorage.removeItem(CACHE_KEY);
   localStorage.removeItem(SYNC_KEY);
 
-  alert("Selected users removed from qualified!");
+  alert("Selected users removed from qualified.");
   buildTable();
-};
+}
 
-/* START */
-buildTable();
+/* ======================================================
+   UNDO PANEL HANDLING
+====================================================== */
+async function handleUndoClick(idx) {
+  let history = loadUndoHistory();
+  const entry = history[idx];
+  if (!entry) return;
+
+  const { id, lastTransferAmount, lastTransferDate } = entry;
+
+  await updateDoc(doc(earningsDB, "earnings_logs", id), {
+    lastTransferAmount: lastTransferAmount || "",
+    lastTransferDate: lastTransferDate || ""
+  });
+
+  // remove from history, update UI
+  history.splice(idx,1);
+  saveUndoHistory(history);
+  updateUndoButton();
+  renderUndoPanel();
+
+  localStorage.removeItem(CACHE_KEY);
+  localStorage.removeItem(SYNC_KEY);
+
+  alert("Transfer restored.");
+  buildTable();
+}
+
+/* ======================================================
+   INIT
+====================================================== */
+window.addEventListener("DOMContentLoaded", () => {
+  const nextSyncEl = document.getElementById("next-sync");
+  updateCountdown(nextSyncEl);
+  setInterval(() => updateCountdown(nextSyncEl), 60000);
+
+  document.getElementById("multiDelete").onclick = multiDeleteTransfers;
+
+  const undoBtn = document.getElementById("undoBtn");
+  const undoPanel = document.getElementById("undoPanel");
+
+  undoBtn.onclick = () => {
+    if (undoPanel.style.display === "block") {
+      undoPanel.style.display = "none";
+    } else {
+      renderUndoPanel();
+      undoPanel.style.display = "block";
+    }
+  };
+
+  undoPanel.addEventListener("click", (e) => {
+    if (e.target.id === "closeUndo") {
+      undoPanel.style.display = "none";
+    } else if (e.target.classList.contains("undo-item")) {
+      const idx = parseInt(e.target.dataset.idx, 10);
+      handleUndoClick(idx);
+    }
+  });
+
+  updateUndoButton();
+  buildTable();
+});
 
 </script>
 
 <style>
-body { font-family:"Segoe UI",Arial; background:#f8fafc; padding:20px; }
-h1 { text-align:center; color:#0f62fe; }
-#loading { text-align:center; color:#6b7280; margin-top:10px; }
-#total { text-align:center; font-size:18px; font-weight:bold; margin-top:15px; }
-#next-sync { text-align:center; margin-bottom:10px; color:#6b7280; }
+body {
+  font-family:"Segoe UI",Arial,sans-serif;
+  background:#f8fafc;
+  padding:20px;
+}
+h1 {
+  text-align:center;
+  color:#0f62fe;
+}
+#loading {
+  text-align:center;
+  color:#6b7280;
+  margin-top:10px;
+}
+#total {
+  text-align:center;
+  font-size:18px;
+  font-weight:bold;
+  margin-top:15px;
+}
+#next-sync {
+  text-align:center;
+  margin-bottom:10px;
+  color:#6b7280;
+}
 
 table {
-  width:95%; margin:15px auto; background:#fff;
-  border-radius:8px; border-collapse:collapse;
+  width:95%;
+  margin:15px auto;
+  background:#ffffff;
+  border-radius:8px;
+  border-collapse:collapse;
   box-shadow:0 2px 6px rgba(0,0,0,0.12);
 }
-th,td { padding:10px; border-bottom:1px solid #e5e7eb; }
-th { background:#0f62fe; color:white; }
-
+th,td {
+  padding:10px;
+  border-bottom:1px solid #e5e7eb;
+}
+th {
+  background:#0f62fe;
+  color:#ffffff;
+}
 .del {
-  background:#dc2626; color:white;
-  padding:5px 10px; border:none;
-  border-radius:6px; cursor:pointer;
+  background:#dc2626;
+  color:#ffffff;
+  padding:5px 10px;
+  border:none;
+  border-radius:6px;
+  cursor:pointer;
 }
-.del:hover { background:#b91c1c; }
+.del:hover {
+  background:#b91c1c;
+}
+.multi-btn, .undo-btn {
+  background:#0d9488;
+  color:#ffffff;
+  padding:8px 14px;
+  border:none;
+  border-radius:6px;
+  cursor:pointer;
+  font-size:14px;
+  font-weight:600;
+  margin:0 5px;
+}
+.multi-btn:hover, .undo-btn:hover {
+  background:#0f766e;
+}
+.undo-btn[disabled] {
+  opacity:0.5;
+  cursor:not-allowed;
+}
 
-.multi-btn {
-  background:#b91c1c; color:white;
-  padding:8px 14px; border:none;
-  border-radius:6px; cursor:pointer;
-  font-size:14px; font-weight:600;
+/* Undo panel */
+.undo-panel {
+  position:fixed;
+  top:50%;
+  left:50%;
+  transform:translate(-50%,-50%);
+  background:#ffffff;
+  border-radius:8px;
+  box-shadow:0 10px 25px rgba(0,0,0,0.2);
+  width:420px;
+  max-height:60vh;
+  display:none;
+  z-index:9999;
 }
-.multi-btn:hover { background:#7f1d1d; }
+.undo-header {
+  padding:10px 14px;
+  font-weight:bold;
+  border-bottom:1px solid #e5e7eb;
+  background:#f3f4f6;
+}
+.undo-body {
+  padding:10px 14px;
+  max-height:40vh;
+  overflow:auto;
+}
+.undo-list {
+  list-style:none;
+  margin:0;
+  padding:0;
+}
+.undo-list li {
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  padding:6px 0;
+  border-bottom:1px solid #f3f4f6;
+}
+.undo-entry {
+  font-size:13px;
+}
+.undo-item {
+  background:#0d9488;
+  color:#ffffff;
+  border:none;
+  border-radius:6px;
+  padding:4px 8px;
+  cursor:pointer;
+  font-size:12px;
+}
+.undo-item:hover {
+  background:#0f766e;
+}
+.undo-footer {
+  padding:8px 14px;
+  border-top:1px solid #e5e7eb;
+  text-align:right;
+}
+.undo-close {
+  background:#6b7280;
+  color:#ffffff;
+  border:none;
+  border-radius:6px;
+  padding:5px 10px;
+  cursor:pointer;
+  font-size:13px;
+}
+.undo-close:hover {
+  background:#4b5563;
+}
 </style>
-
 </head>
 <body>
 
@@ -295,14 +580,15 @@ th { background:#0f62fe; color:white; }
 <div id="total"></div>
 <div id="next-sync"></div>
 
-<div style="text-align:center;margin-bottom:15px;">
+<div style="text-align:center;margin:10px 0 15px 0;">
   <button id="multiDelete" class="multi-btn">🗑 Delete Selected Transfers</button>
+  <button id="undoBtn" class="undo-btn" disabled>⏪ Undo Deleted Transfers (0)</button>
 </div>
 
 <table>
   <thead>
     <tr>
-      <th>Select</th>
+      <th style="text-align:center;">Select</th>
       <th>User</th>
       <th>Worker ID</th>
       <th>Earnings</th>
@@ -313,6 +599,8 @@ th { background:#0f62fe; color:white; }
   </thead>
   <tbody id="data-body"></tbody>
 </table>
+
+<div id="undoPanel" class="undo-panel"></div>
 
 </body>
 </html>
