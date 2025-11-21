@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>💰 MTurk Earnings Monitor (Daily Read-Only)</title>
+<title>💰 MTurk Earnings Monitor (Qualified + Transferred)</title>
 
 <!-- SheetJS for Excel export -->
 <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
@@ -12,9 +12,7 @@ import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/fireba
 import {
   initializeFirestore,
   collection,
-  getDocs,
-  updateDoc,
-  doc
+  getDocs
 } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
 /* ======================================================
@@ -36,11 +34,13 @@ const earningsDB = initializeFirestore(earningsApp, {
 });
 
 /* ======================================================
-   CONSTANTS
+   CONSTANTS + STATE
 ====================================================== */
 const CACHE_KEY = "earnings_cache_data";
 const SYNC_KEY  = "earnings_last_sync";
-const UNDO_KEY  = "earnings_undo_history";
+
+let QUALIFIED_DATA = [];
+let TRANSFERRED_DATA = [];
 
 /* ======================================================
    HELPERS
@@ -69,16 +69,8 @@ function isThisMonth(dateStr){
   return (m === (now.getMonth()+1) && y === now.getFullYear());
 }
 
-function loadUndoHistory() {
-  return JSON.parse(localStorage.getItem(UNDO_KEY) || "[]");
-}
-
-function saveUndoHistory(list) {
-  localStorage.setItem(UNDO_KEY, JSON.stringify(list));
-}
-
 /* ======================================================
-   FIRESTORE READ + CSV QUALIFIED LIST
+   MAIN CSV (team / who to track)
 ====================================================== */
 async function loadMainCSV() {
   const res = await fetch(
@@ -98,6 +90,9 @@ async function loadMainCSV() {
   return { users, workers };
 }
 
+/* ======================================================
+   FIRESTORE FETCH (ONCE PER DAY)
+====================================================== */
 async function fetchFromFirestore() {
   const snap = await getDocs(collection(earningsDB, "earnings_logs"));
   const arr  = [];
@@ -113,9 +108,11 @@ function loadCache() {
 }
 
 /* ======================================================
-   UI HELPERS
+   COUNTDOWN
 ====================================================== */
-function updateCountdown(nextSyncEl) {
+function updateCountdown() {
+  const nextSyncEl = document.getElementById("next-sync");
+  if (!nextSyncEl) return;
   const now  = new Date();
   const next = new Date();
   next.setHours(24,0,0,0);
@@ -127,79 +124,24 @@ function updateCountdown(nextSyncEl) {
   nextSyncEl.innerHTML = `Next Sync: <b>12:00 AM</b> (in ${h}h ${m}m)`;
 }
 
-function updateUndoButton() {
-  const list = loadUndoHistory();
-  const btn  = document.getElementById("undoBtn");
-  if (!btn) return;
-  btn.disabled = list.length === 0;
-  btn.textContent = `⏪ Undo Deleted Transfers (${list.length})`;
-}
-
-function renderUndoPanel() {
-  const panel = document.getElementById("undoPanel");
-  if (!panel) return;
-
-  const list = loadUndoHistory();
-  if (list.length === 0) {
-    panel.innerHTML = `
-      <div class="undo-header">No deleted transfers</div>
-      <div class="undo-body">Nothing to undo.</div>
-      <div class="undo-footer">
-        <button id="closeUndo" class="undo-close">Close</button>
-      </div>
-    `;
-    return;
-  }
-
-  let html = `
-    <div class="undo-header">Deleted Transfers</div>
-    <div class="undo-body">
-      <ul class="undo-list">
-  `;
-
-  list.forEach((e, idx) => {
-    const amt = e.lastTransferAmount || "0.00";
-    const dt  = e.lastTransferDate || "—";
-    const u   = e.user || "(unknown)";
-    const w   = e.workerId || e.id || "";
-
-    html += `
-      <li>
-        <span class="undo-entry">
-          <b>${u}</b> (${w}) – $${amt} on ${dt}
-        </span>
-        <button class="undo-item" data-idx="${idx}">Undo</button>
-      </li>
-    `;
-  });
-
-  html += `
-      </ul>
-    </div>
-    <div class="undo-footer">
-      <button id="closeUndo" class="undo-close">Close</button>
-    </div>
-  `;
-
-  panel.innerHTML = html;
-}
-
 /* ======================================================
-   MAIN BUILD TABLE
+   BUILD DATA FOR BOTH TABS
 ====================================================== */
-async function buildTable() {
-  const loadingEl  = document.getElementById("loading");
-  const totalEl    = document.getElementById("total");
-  const tbody      = document.getElementById("data-body");
+async function buildData() {
+  const loadingEl = document.getElementById("loading");
+  const totalEl   = document.getElementById("totalQualified");
+  const totalTransEl = document.getElementById("totalTransferred");
 
   loadingEl.style.display = "block";
 
   const { users, workers } = await loadMainCSV();
   const all = needsSync() ? await fetchFromFirestore() : loadCache();
 
-  tbody.innerHTML = "";
-  let total = 0;
-  const result = [];
+  QUALIFIED_DATA  = [];
+  TRANSFERRED_DATA = [];
+
+  let totalQualified = 0;
+  let totalTransferred = 0;
 
   for (const d of all) {
     const user = (d.user || "").trim();
@@ -207,173 +149,120 @@ async function buildTable() {
 
     if (!users.has(user) && !workers.has(wid)) continue;
 
-    const curr = parseFloat(d.currentEarnings) || 0;
-    const lt   = parseFloat(d.lastTransferAmount) || 0;
-    const lm   = parseFloat(d.lastMonthEarnings) || 0;
+    const current  = parseFloat(d.currentEarnings) || 0;
+    const lt       = parseFloat(d.lastTransferAmount) || 0;
+    const lastDate = d.lastTransferDate || "";
+    const nextDate = d.nextTransferDate || lastDate || "—";
 
-    let amt = curr>0 ? curr : lt>0 ? lt : lm>0 ? lm : 0;
-    let next   = d.nextTransferDate || d.lastTransferDate || "—";
-    let status = "Not Yet";
-
-    // RULE 1: earnings dropped
-    if (lt > curr && lt >= 8) {
-      status = `Transferred $${lt.toFixed(2)}`;
-      amt    = lt;
-    }
-    // RULE 2: transfer in this month
-    else if (isThisMonth(d.lastTransferDate) && lt >= 8) {
-      status = `Transferred $${lt.toFixed(2)}`;
-      amt    = lt;
+    // 1️⃣ QUALIFIED: currentEarnings ≥ 8 ONLY
+    if (current >= 8) {
+      QUALIFIED_DATA.push({
+        user,
+        wid,
+        current,
+        nextDate
+      });
+      totalQualified += current;
     }
 
-    if (amt < 8) continue;
-
-    result.push({
-      id: d.id,
-      user,
-      wid,
-      amt,
-      next,
-      status,
-      lastTransferAmount: d.lastTransferAmount || "",
-      lastTransferDate: d.lastTransferDate || "",
-      currentEarnings: d.currentEarnings || "",
-      lastMonthEarnings: d.lastMonthEarnings || "",
-      nextTransferDate: d.nextTransferDate || "",
-      workerId: wid
-    });
-
-    total += amt;
+    // 2️⃣ TRANSFERRED: lastTransferAmount ≥ 8 AND lastTransferDate in this month
+    if (lt >= 8 && isThisMonth(lastDate)) {
+      TRANSFERRED_DATA.push({
+        user,
+        wid,
+        amount: lt,
+        date: lastDate
+      });
+      totalTransferred += lt;
+    }
   }
 
-  // Transferred first
-  result.sort((a,b)=> a.status.includes("Transferred") ? -1 : 1);
+  // Sort both by amount desc
+  QUALIFIED_DATA.sort((a,b)=>b.current - a.current);
+  TRANSFERRED_DATA.sort((a,b)=>b.amount - a.amount);
 
   totalEl.innerHTML =
-    `Total Earnings (≥ $8): <b>$${total.toFixed(2)}</b> (${result.length} users)`;
+    `Qualified (current ≥ $8): <b>$${totalQualified.toFixed(2)}</b> (${QUALIFIED_DATA.length} users)`;
 
-  tbody.innerHTML = "";
+  totalTransEl.innerHTML =
+    `This Month Transfers (≥ $8): <b>$${totalTransferred.toFixed(2)}</b> (${TRANSFERRED_DATA.length} users)`;
 
-  for (const r of result) {
-    const isTransferred = r.status.includes("Transferred");
-
-    const tr = document.createElement("tr");
-    tr.innerHTML = `
-      <td style="text-align:center;">
-        ${
-          isTransferred
-          ? `<input type="checkbox" class="row-check" data-id="${r.id}">`
-          : "—"
-        }
-      </td>
-      <td>${r.user}</td>
-      <td>${r.wid}</td>
-      <td style="color:#15803d;font-weight:bold">${r.amt.toFixed(2)}</td>
-      <td>${r.next}</td>
-      <td style="font-weight:bold;color:${isTransferred ? "#b91c1c" : "#065f46"}">
-        ${r.status}
-      </td>
-      <td>
-        ${
-          isTransferred
-          ? `<button class="del" data-id="${r.id}">🗑</button>`
-          : "—"
-        }
-      </td>
-    `;
-
-    // Single delete handler
-    const delBtn = tr.querySelector(".del");
-    if (delBtn) {
-      delBtn.onclick = async () => {
-        if (!confirm(`Remove transfer for ${r.user}?`)) return;
-
-        // store in undo history
-        let history = loadUndoHistory().filter(e => e.id !== r.id);
-        history.push({
-          id: r.id,
-          user: r.user,
-          workerId: r.wid,
-          lastTransferAmount: r.lastTransferAmount,
-          lastTransferDate: r.lastTransferDate
-        });
-        saveUndoHistory(history);
-        updateUndoButton();
-
-        // clear transfer fields + reset currentEarnings
-        await updateDoc(doc(earningsDB, "earnings_logs", r.id), {
-          lastTransferAmount: "",
-          lastTransferDate: "",
-          currentEarnings: "0"
-        });
-
-        localStorage.removeItem(CACHE_KEY);
-        localStorage.removeItem(SYNC_KEY);
-
-        alert("Removed from qualified users!");
-        buildTable();
-      };
-    }
-
-    tbody.appendChild(tr);
-  }
+  renderQualifiedTable();
+  initTransferredFilterAndTable();
 
   loadingEl.style.display = "none";
 }
 
 /* ======================================================
-   MULTI-DELETE TRANSFERS
+   RENDER – QUALIFIED TAB
 ====================================================== */
-async function multiDeleteTransfers() {
-  const checks = [...document.querySelectorAll(".row-check:checked")];
+function renderQualifiedTable() {
+  const tbody = document.getElementById("qualified-body");
+  tbody.innerHTML = "";
 
-  if (checks.length === 0) {
-    alert("Select at least one transferred user.");
-    return;
+  for (const r of QUALIFIED_DATA) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${r.user}</td>
+      <td>${r.wid}</td>
+      <td style="color:#15803d;font-weight:bold">${r.current.toFixed(2)}</td>
+      <td>${r.nextDate}</td>
+    `;
+    tbody.appendChild(tr);
   }
-
-  if (!confirm(`Remove transfers for ${checks.length} user(s)?`)) return;
-
-  let history = loadUndoHistory();
-
-  for (const c of checks) {
-    const row  = c.closest("tr");
-    const id   = c.dataset.id;
-    const user = row.children[1].textContent.trim();
-    const wid  = row.children[2].textContent.trim();
-    const statusText = row.children[5].textContent.trim();
-    const match = statusText.match(/\$([\d.]+)/);
-    const amt   = match ? match[1] : "";
-
-    history = history.filter(e => e.id !== id);
-    history.push({
-      id,
-      user,
-      workerId: wid,
-      lastTransferAmount: amt,
-      lastTransferDate: ""   // unknown from UI
-    });
-
-    // clear transfer fields + reset currentEarnings
-    await updateDoc(doc(earningsDB, "earnings_logs", id), {
-      lastTransferAmount: "",
-      lastTransferDate: "",
-      currentEarnings: "0"
-    });
-  }
-
-  saveUndoHistory(history);
-  updateUndoButton();
-
-  localStorage.removeItem(CACHE_KEY);
-  localStorage.removeItem(SYNC_KEY);
-
-  alert("Selected users removed from qualified.");
-  buildTable();
 }
 
 /* ======================================================
-   TEAM CSV (Excel Export)
+   RENDER – TRANSFERRED TAB + DATE FILTER
+====================================================== */
+function initTransferredFilterAndTable() {
+  const select = document.getElementById("transferDateFilter");
+
+  // Collect unique dates
+  const dates = Array.from(
+    new Set(TRANSFERRED_DATA.map(r => r.date).filter(Boolean))
+  ).sort((a,b)=> new Date(a) - new Date(b));
+
+  // Build options
+  select.innerHTML = `<option value="">All Dates</option>`;
+  for (const d of dates) {
+    const opt = document.createElement("option");
+    opt.value = d;
+    opt.textContent = d;
+    select.appendChild(opt);
+  }
+
+  // Hook change
+  select.onchange = () => renderTransferredTable();
+
+  // Initial render
+  renderTransferredTable();
+}
+
+function renderTransferredTable() {
+  const tbody = document.getElementById("transferred-body");
+  const filterVal = document.getElementById("transferDateFilter").value;
+  tbody.innerHTML = "";
+
+  const data = TRANSFERRED_DATA.filter(r => {
+    if (!filterVal) return true;
+    return r.date === filterVal;
+  });
+
+  for (const r of data) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${r.user}</td>
+      <td>${r.wid}</td>
+      <td style="color:#b91c1c;font-weight:bold">${r.amount.toFixed(2)}</td>
+      <td>${r.date}</td>
+    `;
+    tbody.appendChild(tr);
+  }
+}
+
+/* ======================================================
+   TEAM CSV (Excel Export – all users)
 ====================================================== */
 async function loadTeamCSV() {
   const res = await fetch(
@@ -437,66 +326,41 @@ async function exportExcelReport() {
 }
 
 /* ======================================================
-   UNDO PANEL HANDLING
+   TABS
 ====================================================== */
-async function handleUndoClick(idx) {
-  let history = loadUndoHistory();
-  const entry = history[idx];
-  if (!entry) return;
+function switchTab(tab) {
+  const qTabBtn = document.getElementById("tab-qualified");
+  const tTabBtn = document.getElementById("tab-transferred");
+  const qPanel  = document.getElementById("panel-qualified");
+  const tPanel  = document.getElementById("panel-transferred");
 
-  const { id, lastTransferAmount, lastTransferDate } = entry;
-
-  await updateDoc(doc(earningsDB, "earnings_logs", id), {
-    lastTransferAmount: lastTransferAmount || "",
-    lastTransferDate: lastTransferDate || ""
-  });
-
-  history.splice(idx,1);
-  saveUndoHistory(history);
-  updateUndoButton();
-  renderUndoPanel();
-
-  localStorage.removeItem(CACHE_KEY);
-  localStorage.removeItem(SYNC_KEY);
-
-  alert("Transfer restored.");
-  buildTable();
+  if (tab === "qualified") {
+    qTabBtn.classList.add("active-tab");
+    tTabBtn.classList.remove("active-tab");
+    qPanel.style.display = "block";
+    tPanel.style.display = "none";
+  } else {
+    tTabBtn.classList.add("active-tab");
+    qTabBtn.classList.remove("active-tab");
+    tPanel.style.display = "block";
+    qPanel.style.display = "none";
+  }
 }
 
 /* ======================================================
    INIT
 ====================================================== */
 window.addEventListener("DOMContentLoaded", () => {
-  const nextSyncEl = document.getElementById("next-sync");
-  updateCountdown(nextSyncEl);
-  setInterval(() => updateCountdown(nextSyncEl), 60000);
+  updateCountdown();
+  setInterval(updateCountdown, 60000);
 
-  document.getElementById("multiDelete").onclick = multiDeleteTransfers;
   document.getElementById("downloadExcel").onclick = exportExcelReport;
 
-  const undoBtn = document.getElementById("undoBtn");
-  const undoPanel = document.getElementById("undoPanel");
+  document.getElementById("tab-qualified").onclick = () => switchTab("qualified");
+  document.getElementById("tab-transferred").onclick = () => switchTab("transferred");
 
-  undoBtn.onclick = () => {
-    if (undoPanel.style.display === "block") {
-      undoPanel.style.display = "none";
-    } else {
-      renderUndoPanel();
-      undoPanel.style.display = "block";
-    }
-  };
-
-  undoPanel.addEventListener("click", (e) => {
-    if (e.target.id === "closeUndo") {
-      undoPanel.style.display = "none";
-    } else if (e.target.classList.contains("undo-item")) {
-      const idx = parseInt(e.target.dataset.idx, 10);
-      handleUndoClick(idx);
-    }
-  });
-
-  updateUndoButton();
-  buildTable();
+  switchTab("qualified");
+  buildData();
 });
 </script>
 
@@ -515,21 +379,48 @@ h1 {
   color:#6b7280;
   margin-top:10px;
 }
-#total {
+.summary-bar {
   text-align:center;
-  font-size:18px;
-  font-weight:bold;
-  margin-top:15px;
+  font-size:16px;
+  margin-top:10px;
 }
 #next-sync {
   text-align:center;
-  margin-bottom:10px;
+  margin-top:4px;
+  margin-bottom:12px;
   color:#6b7280;
 }
 
-table {
+/* Tabs */
+.tabs {
+  display:flex;
+  justify-content:center;
+  margin:10px 0 15px 0;
+}
+.tab-btn {
+  padding:8px 16px;
+  border-radius:999px;
+  border:1px solid #d1d5db;
+  background:#e5e7eb;
+  color:#374151;
+  margin:0 4px;
+  cursor:pointer;
+  font-size:14px;
+  font-weight:600;
+}
+.tab-btn.active-tab {
+  background:#0f62fe;
+  color:#ffffff;
+  border-color:#0f62fe;
+}
+
+/* Common table style */
+.table-wrap {
   width:95%;
-  margin:15px auto;
+  margin:0 auto 20px auto;
+}
+table {
+  width:100%;
   background:#ffffff;
   border-radius:8px;
   border-collapse:collapse;
@@ -543,18 +434,9 @@ th {
   background:#0f62fe;
   color:#ffffff;
 }
-.del {
-  background:#dc2626;
-  color:#ffffff;
-  padding:5px 10px;
-  border:none;
-  border-radius:6px;
-  cursor:pointer;
-}
-.del:hover {
-  background:#b91c1c;
-}
-.multi-btn, .undo-btn, .excel-btn {
+
+/* Excel button */
+.excel-btn {
   background:#0d9488;
   color:#ffffff;
   padding:8px 14px;
@@ -563,84 +445,25 @@ th {
   cursor:pointer;
   font-size:14px;
   font-weight:600;
-  margin:0 5px;
+  margin:10px auto 15px auto;
+  display:inline-block;
 }
-.multi-btn:hover, .undo-btn:hover, .excel-btn:hover {
+.excel-btn:hover {
   background:#0f766e;
-}
-.undo-btn[disabled] {
-  opacity:0.5;
-  cursor:not-allowed;
 }
 
-/* Undo panel */
-.undo-panel {
-  position:fixed;
-  top:50%;
-  left:50%;
-  transform:translate(-50%,-50%);
-  background:#ffffff;
-  border-radius:8px;
-  box-shadow:0 10px 25px rgba(0,0,0,0.2);
-  width:420px;
-  max-height:60vh;
-  display:none;
-  z-index:9999;
+/* Transferred filter */
+.filter-bar {
+  margin-bottom:10px;
+  font-size:14px;
+  color:#374151;
 }
-.undo-header {
-  padding:10px 14px;
-  font-weight:bold;
-  border-bottom:1px solid #e5e7eb;
-  background:#f3f4f6;
-}
-.undo-body {
-  padding:10px 14px;
-  max-height:40vh;
-  overflow:auto;
-}
-.undo-list {
-  list-style:none;
-  margin:0;
-  padding:0;
-}
-.undo-list li {
-  display:flex;
-  justify-content:space-between;
-  align-items:center;
-  padding:6px 0;
-  border-bottom:1px solid #f3f4f6;
-}
-.undo-entry {
-  font-size:13px;
-}
-.undo-item {
-  background:#0d9488;
-  color:#ffffff;
-  border:none;
-  border-radius:6px;
+.filter-bar select {
+  margin-left:6px;
   padding:4px 8px;
-  cursor:pointer;
-  font-size:12px;
-}
-.undo-item:hover {
-  background:#0f766e;
-}
-.undo-footer {
-  padding:8px 14px;
-  border-top:1px solid #e5e7eb;
-  text-align:right;
-}
-.undo-close {
-  background:#6b7280;
-  color:#ffffff;
-  border:none;
   border-radius:6px;
-  padding:5px 10px;
-  cursor:pointer;
-  font-size:13px;
-}
-.undo-close:hover {
-  background:#4b5563;
+  border:1px solid #d1d5db;
+  font-size:14px;
 }
 </style>
 </head>
@@ -649,31 +472,55 @@ th {
 <h1>💰 Daily MTurk Earnings Monitor</h1>
 
 <div id="loading">Loading Earnings…</div>
-<div id="total"></div>
+
+<div class="summary-bar" id="totalQualified"></div>
+<div class="summary-bar" id="totalTransferred"></div>
 <div id="next-sync"></div>
 
-<div style="text-align:center;margin:10px 0 15px 0;">
-  <button id="multiDelete" class="multi-btn">🗑 Delete Selected Transfers</button>
-  <button id="undoBtn" class="undo-btn" disabled>⏪ Undo Deleted Transfers (0)</button>
+<div style="text-align:center;">
   <button id="downloadExcel" class="excel-btn">📥 Download Today’s Excel Report</button>
 </div>
 
-<table>
-  <thead>
-    <tr>
-      <th style="text-align:center;">Select</th>
-      <th>User</th>
-      <th>Worker ID</th>
-      <th>Earnings</th>
-      <th>Next Transfer Date</th>
-      <th>Status</th>
-      <th>Delete</th>
-    </tr>
-  </thead>
-  <tbody id="data-body"></tbody>
-</table>
+<div class="tabs">
+  <button id="tab-qualified" class="tab-btn active-tab">Qualified Users (current ≥ $8)</button>
+  <button id="tab-transferred" class="tab-btn">Transferred (this month)</button>
+</div>
 
-<div id="undoPanel" class="undo-panel"></div>
+<!-- QUALIFIED PANEL -->
+<div id="panel-qualified" class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>User</th>
+        <th>Worker ID</th>
+        <th>Current Earnings ($)</th>
+        <th>Next Transfer Date</th>
+      </tr>
+    </thead>
+    <tbody id="qualified-body"></tbody>
+  </table>
+</div>
+
+<!-- TRANSFERRED PANEL -->
+<div id="panel-transferred" class="table-wrap" style="display:none;">
+  <div class="filter-bar">
+    Filter by Transfer Date (this month only):
+    <select id="transferDateFilter">
+      <option value="">All Dates</option>
+    </select>
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th>User</th>
+        <th>Worker ID</th>
+        <th>Transferred Amount ($)</th>
+        <th>Transferred Date</th>
+      </tr>
+    </thead>
+    <tbody id="transferred-body"></tbody>
+  </table>
+</div>
 
 </body>
 </html>
