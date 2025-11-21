@@ -300,10 +300,11 @@ async function buildTable() {
         saveUndoHistory(history);
         updateUndoButton();
 
-        // clear transfer fields
+        // clear transfer fields + reset currentEarnings
         await updateDoc(doc(earningsDB, "earnings_logs", r.id), {
           lastTransferAmount: "",
-          lastTransferDate: ""
+          lastTransferDate: "",
+          currentEarnings: "0"
         });
 
         localStorage.removeItem(CACHE_KEY);
@@ -353,9 +354,11 @@ async function multiDeleteTransfers() {
       lastTransferDate: ""   // unknown from UI
     });
 
+    // clear transfer fields + reset currentEarnings
     await updateDoc(doc(earningsDB, "earnings_logs", id), {
       lastTransferAmount: "",
-      lastTransferDate: ""
+      lastTransferDate: "",
+      currentEarnings: "0"
     });
   }
 
@@ -495,7 +498,6 @@ window.addEventListener("DOMContentLoaded", () => {
   updateUndoButton();
   buildTable();
 });
-
 </script>
 
 <style>
