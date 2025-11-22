@@ -84,7 +84,7 @@ function isThisMonthAfterFifth(dateStr) {
 ====================================================== */
 async function loadMainCSV() {
   const res = await fetch(
-    "https://docs.google.com/spreadsheets/d/1mf2-AQ59CuboAWz8Fle3qXTFfAI3cnB7mrkqQF1lyCw/export?format=csv&gid=0"
+    "https://docs.google.com/spreadsheets/d/1ce5o_hv7I8T76qMMWfuWQGMDOtjUJPX46_qqLneorxs/export?format=csv&gid=0"
   );
   const text  = await res.text();
   const lines = text.split("\n").filter(Boolean);
@@ -199,8 +199,7 @@ async function buildData() {
   totalQEl.innerHTML =
     `Qualified (current ≥ $8 + transfers after 5th): <b>$${finalQualifiedTotal.toFixed(2)}</b> (${QUALIFIED_DATA.length} users)`;
 
-  totalTransEl.innerHTML =
-    `This Month Transfers after 5th (≥ $8): <b>$${sumTransfersAfter5.toFixed(2)}</b> (${TRANSFERRED_DATA.length} transfers)`;
+ 
 
   renderQualifiedTable();
   initTransferredFilterAndTable();
@@ -282,7 +281,7 @@ function renderTransferredTable() {
 ====================================================== */
 async function loadTeamCSV() {
   const res = await fetch(
-    "https://docs.google.com/spreadsheets/d/1mf2-AQ59CuboAWz8Fle3qXTFfAI3cnB7mrkqQF1lyCw/export?format=csv&gid=0"
+    "https://docs.google.com/spreadsheets/d/1ce5o_hv7I8T76qMMWfuWQGMDOtjUJPX46_qqLneorxs/export?format=csv&gid=0"
   );
   const text  = await res.text();
   const lines = text.split("\n").filter(Boolean);
