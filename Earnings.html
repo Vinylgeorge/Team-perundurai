@@ -199,8 +199,7 @@ async function buildData() {
   totalQEl.innerHTML =
     `Qualified (current ≥ $8 + transfers after 5th): <b>$${finalQualifiedTotal.toFixed(2)}</b> (${QUALIFIED_DATA.length} users)`;
 
-  totalTransEl.innerHTML =
-    `This Month Transfers after 5th (≥ $8): <b>$${sumTransfersAfter5.toFixed(2)}</b> (${TRANSFERRED_DATA.length} transfers)`;
+
 
   renderQualifiedTable();
   initTransferredFilterAndTable();
