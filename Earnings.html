@@ -45,21 +45,17 @@ function today() { return new Date().toISOString().slice(0,10); }
 function needsSync() { return localStorage.getItem(SYNC_KEY) !== today(); }
 function markSynced() { localStorage.setItem(SYNC_KEY, today()); }
 
-/* Robust date parsing:
-   supports:
-   - "11/17/25"
-   - "11/17/2025"
-   - "Nov 30, 2025"
-   - ISO strings
-*/
 function parseAnyDate(dateStr) {
   if (!dateStr) return null;
   const s = String(dateStr).trim();
   if (!s) return null;
 
+  // handle "11/18/2025, 7:17:04 AM"
+  const s0 = s.split(",")[0].trim();
+
   // 1) MM/DD/YY or MM/DD/YYYY
-  if (s.includes("/")) {
-    const p = s.split("/");
+  if (s0.includes("/")) {
+    const p = s0.split("/");
     if (p.length === 3) {
       const m = parseInt(p[0], 10);
       const d = parseInt(p[1], 10);
@@ -72,21 +68,18 @@ function parseAnyDate(dateStr) {
     }
   }
 
-  // 2) "Nov 30, 2025" or any Date.parse-able string
   const t = Date.parse(s);
   if (!Number.isNaN(t)) return new Date(t);
 
   return null;
 }
 
-// After 5th (based on that transfer's date)
 function isAfterFifth(dateStr) {
   const dt = parseAnyDate(dateStr);
   if (!dt) return false;
-  return dt.getDate() > 5;
+  return dt.getDate() > 5; // includes 6th and above
 }
 
-// Active until 6th of the NEXT month (based on transfer date)
 function isTransferActive(dateStr) {
   const dt = parseAnyDate(dateStr);
   if (!dt) return false;
@@ -111,33 +104,29 @@ function saveTransfersCache(arr) {
 }
 
 /*
-  NEW RULE (your requirement):
-  - Transferred tab must show ONLY users in Google Sheet
-  - Transfer entries are append-only (never removed) until THEIR next-month-6th
-  - Only add new transfers when Firestore is read (daily or manual sync)
+  - sheet-only
+  - append-only
+  - keep until next-month-6th
+  - ✅ allow ANY transfer amount > 0 (NOT >= 8)
 */
 function refreshTransfersCacheFromDocs(allDocs, users, workers) {
-  // keep only ACTIVE transfers (expired ones drop automatically)
   let cache = loadTransfersCache().filter(t => isTransferActive(t.date));
 
-  // add NEW transfers (append-only)
   for (const d of allDocs) {
     const user = (d.user || "").trim();
     const wid  = (d.workerId || "").trim();
 
-    // ✅ MUST be in your Google Sheet
     const inTeam = users.has(user) || workers.has(wid);
     if (!inTeam) continue;
 
     const amt = parseFloat(d.lastTransferAmount) || 0;
     const dt  = d.lastTransferDate || "";
 
-    if (amt < 8) continue;
+    if (amt <= 0) continue;          // ✅ changed
     if (!dt) continue;
     if (!isAfterFifth(dt)) continue;
     if (!isTransferActive(dt)) continue;
 
-    // uniqueness: allow multiple transfers across different dates (append-only)
     const exists = cache.some(t =>
       (t.user || "") === user &&
       (t.workerId || "") === wid &&
@@ -211,10 +200,7 @@ function updateCountdown() {
 }
 
 /* ======================================================
-   BUILD DATA (MERGED + FIXED)
-   - Qualified: currentEarnings >= 8 (sheet users only)
-   - Transferred: from localStorage cache (sheet users only)
-   - TotalQualified = sum(current>=8) + sum(active transfers after 5th)
+   BUILD DATA
 ====================================================== */
 async function buildData({ forceSync = false } = {}) {
   const loadingEl    = document.getElementById("loading");
@@ -223,21 +209,14 @@ async function buildData({ forceSync = false } = {}) {
 
   loadingEl.style.display = "block";
 
-  // ✅ Load Google Sheet team list
   const { users, workers } = await loadMainCSV();
 
-  // ✅ One Firestore read per day (unless manual sync)
   let docs;
-  if (forceSync || needsSync()) {
-    docs = await fetchFromFirestore();
-  } else {
-    docs = loadCache();
-  }
+  if (forceSync || needsSync()) docs = await fetchFromFirestore();
+  else docs = loadCache();
 
-  // ✅ Refresh transfer cache (append-only) AND restricted to sheet users
   const transfersActive = refreshTransfersCacheFromDocs(docs, users, workers);
 
-  // ===== Qualified (current >= 8) =====
   QUALIFIED_DATA = [];
   let sumQualifiedCurrent = 0;
 
@@ -256,10 +235,9 @@ async function buildData({ forceSync = false } = {}) {
     }
   }
 
-  // ===== Transferred (cache-only, sheet-only) =====
   TRANSFERRED_DATA = transfersActive
     .filter(t => users.has((t.user || "").trim()) || workers.has((t.workerId || "").trim()))
-    .filter(t => (Number(t.amount) || 0) >= 8 && isAfterFifth(t.date) && isTransferActive(t.date))
+    .filter(t => (Number(t.amount) || 0) > 0 && isAfterFifth(t.date) && isTransferActive(t.date)) // ✅ changed
     .map(t => ({
       user: (t.user || "").trim(),
       wid: (t.workerId || "").trim(),
@@ -267,11 +245,9 @@ async function buildData({ forceSync = false } = {}) {
       date: t.date
     }));
 
-  // Totals
   const sumTransfersActive = TRANSFERRED_DATA.reduce((acc, x) => acc + (x.amount || 0), 0);
   const finalQualifiedTotal = sumQualifiedCurrent + sumTransfersActive;
 
-  // Sorting
   QUALIFIED_DATA.sort((a,b)=> b.current - a.current);
   TRANSFERRED_DATA.sort((a,b)=> b.amount - a.amount);
 
@@ -390,7 +366,6 @@ window.addEventListener("DOMContentLoaded", () => {
   document.getElementById("tab-qualified").onclick   = () => switchTab("qualified");
   document.getElementById("tab-transferred").onclick = () => switchTab("transferred");
 
-  // Manual sync (optional)
   document.getElementById("syncNow").onclick = () => buildData({ forceSync: true });
 
   switchTab("qualified");
@@ -422,7 +397,7 @@ th,td { padding:10px; border-bottom:1px solid #e5e7eb; }
 th { background:#0f62fe; color:#fff; }
 
 .filter-bar { margin-bottom:10px; font-size:14px; color:#374151; }
-.filterc .filter-bar select {
+.filter-bar select {
   margin-left:6px; padding:4px 8px; border-radius:6px; border:1px solid #d1d5db; font-size:14px;
 }
 
