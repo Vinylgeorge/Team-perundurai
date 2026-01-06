@@ -4,8 +4,6 @@
 <meta charset="UTF-8">
 <title>💰 MTurk Earnings Monitor (Qualified + Transferred)</title>
 
-<script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
-
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
 import { initializeFirestore, collection, getDocs } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
@@ -33,7 +31,7 @@ const earningsDB = initializeFirestore(earningsApp, {
 ====================================================== */
 const CACHE_KEY      = "earnings_cache_data";
 const SYNC_KEY       = "earnings_last_sync";
-const TRANSFERS_KEY  = "earnings_transfers_cache"; // append-only transfers until next-month-6th
+const TRANSFERS_KEY  = "earnings_transfers_cache"; // append-only transfers until next-month-8th (TEMP)
 
 let QUALIFIED_DATA   = [];
 let TRANSFERRED_DATA = [];
@@ -85,26 +83,14 @@ function fmtDate(dateStr) {
   return dt.toLocaleDateString();
 }
 
-/* ============================
-   ✅ TEMP TEST RULE:
-   Include transfers ONLY AFTER 8th of CURRENT MONTH
-   (Later switch back to after 5th)
-============================ */
-function isAfterEighthOfCurrentMonth(dateStr) {
+/* ✅ Include transfers AFTER 5th (same rule as before) */
+function isAfterFifth(dateStr) {
   const dt = parseAnyDate(dateStr);
   if (!dt) return false;
-  const now = new Date();
-  return (
-    dt.getFullYear() === now.getFullYear() &&
-    dt.getMonth() === now.getMonth() &&
-    dt.getDate() > 8
-  );
+  return dt.getDate() > 5;
 }
 
-/* Active until 6th of the NEXT month (based on transfer date)
-   NOTE: This keeps transfers visible UNTIL next month's 6th (exclusive at 6th 00:00).
-   If you want it visible THROUGH the 6th day, change cutoff day to 7.
-*/
+/* ✅ TEMP TEST: keep transfers ACTIVE until 8th of NEXT month */
 function isTransferActive(dateStr) {
   const dt = parseAnyDate(dateStr);
   if (!dt) return false;
@@ -123,11 +109,10 @@ function saveTransfersCache(arr) {
 }
 
 /*
-  Rule (current temp test):
-  - Transferred tab must show ONLY users in Google Sheet
-  - Transfer entries are append-only (never removed) until THEIR next-month-6th
+  RULES:
+  - Transferred tab shows ONLY users in Google Sheet
+  - Transfer entries are append-only; expire only after THEIR next-month-8th (TEMP)
   - Only add new transfers when Firestore is read (daily or manual sync)
-  - TEMP: Only include transfers AFTER 8th of CURRENT MONTH
 */
 function refreshTransfersCacheFromDocs(allDocs, users, workers) {
   // keep only ACTIVE transfers (expired ones drop automatically)
@@ -137,7 +122,7 @@ function refreshTransfersCacheFromDocs(allDocs, users, workers) {
   for (const d of allDocs) {
     const user = (d.user || "").trim();
 
-    // ✅ FIX: workerId fallback to doc id (very important)
+    // ✅ IMPORTANT FIX: workerId fallback to doc id
     const wid  = String(d.workerId || d.id || "").trim();
 
     // ✅ MUST be in your Google Sheet
@@ -149,10 +134,7 @@ function refreshTransfersCacheFromDocs(allDocs, users, workers) {
 
     if (amt < 8) continue;
     if (!dt) continue;
-
-    // ✅ TEMP TEST RULE: after 8th of CURRENT month only
-    if (!isAfterEighthOfCurrentMonth(dt)) continue;
-
+    if (!isAfterFifth(dt)) continue;
     if (!isTransferActive(dt)) continue;
 
     // uniqueness: allow multiple transfers across different dates (append-only)
@@ -229,10 +211,10 @@ function updateCountdown() {
 }
 
 /* ======================================================
-   BUILD DATA (MERGED + FIXED)
+   BUILD DATA
    - Qualified: currentEarnings >= 8 (sheet users only)
    - Transferred: from localStorage cache (sheet users only)
-   - TotalQualified = sum(current>=8) + sum(active transfers after 8th - TEMP)
+   - TotalQualified = sum(current>=8) + sum(active transfers after 5th)
 ====================================================== */
 async function buildData({ forceSync = false } = {}) {
   const loadingEl    = document.getElementById("loading");
@@ -252,7 +234,7 @@ async function buildData({ forceSync = false } = {}) {
     docs = loadCache();
   }
 
-  // ✅ Refresh transfer cache (append-only) AND restricted to sheet users
+  // ✅ Refresh transfer cache (append-only)
   const transfersActive = refreshTransfersCacheFromDocs(docs, users, workers);
 
   // ===== Qualified (current >= 8) =====
@@ -261,7 +243,7 @@ async function buildData({ forceSync = false } = {}) {
 
   for (const d of docs) {
     const user = (d.user || "").trim();
-    const wid  = String(d.workerId || d.id || "").trim(); // ✅ FIX: fallback
+    const wid  = String(d.workerId || d.id || "").trim(); // ✅ fallback
 
     if (!users.has(user) && !workers.has(wid)) continue;
 
@@ -274,10 +256,10 @@ async function buildData({ forceSync = false } = {}) {
     }
   }
 
-  // ===== Transferred (cache-only, sheet-only) =====
+  // ===== Transferred (cache-only) =====
   TRANSFERRED_DATA = transfersActive
     .filter(t => users.has(String(t.user || "").trim()) || workers.has(String(t.workerId || "").trim()))
-    .filter(t => (Number(t.amount) || 0) >= 8 && isAfterEighthOfCurrentMonth(t.date) && isTransferActive(t.date))
+    .filter(t => (Number(t.amount) || 0) >= 8 && isAfterFifth(t.date) && isTransferActive(t.date))
     .map(t => ({
       user: String(t.user || "").trim(),
       wid: String(t.workerId || "").trim(),
@@ -294,10 +276,10 @@ async function buildData({ forceSync = false } = {}) {
   TRANSFERRED_DATA.sort((a,b)=> b.amount - a.amount);
 
   totalQEl.innerHTML =
-    `Qualified (current ≥ $8) + Active Transfers (after 8th TEMP): <b>$${finalQualifiedTotal.toFixed(2)}</b> (${QUALIFIED_DATA.length} users)`;
+    `Qualified (current ≥ $8) + Active Transfers (after 5th): <b>$${finalQualifiedTotal.toFixed(2)}</b> (${QUALIFIED_DATA.length} users)`;
 
   totalTransEl.innerHTML =
-    `Transferred (after 8th TEMP): <b>$${sumTransfersActive.toFixed(2)}</b> (${TRANSFERRED_DATA.length} transfers)`;
+    `Transferred (after 5th, kept until next 8th TEMP): <b>$${sumTransfersActive.toFixed(2)}</b> (${TRANSFERRED_DATA.length} transfers)`;
 
   renderQualifiedTable();
   initTransferredFilterAndTable();
@@ -306,7 +288,7 @@ async function buildData({ forceSync = false } = {}) {
 }
 
 /* ======================================================
-   RENDER – QUALIFIED TAB
+   RENDER – QUALIFIED
 ====================================================== */
 function renderQualifiedTable() {
   const tbody = document.getElementById("qualified-body");
@@ -325,7 +307,7 @@ function renderQualifiedTable() {
 }
 
 /* ======================================================
-   RENDER – TRANSFERRED TAB + DATE FILTER
+   RENDER – TRANSFERRED + DATE FILTER
 ====================================================== */
 function initTransferredFilterAndTable() {
   const select = document.getElementById("transferDateFilter");
@@ -408,12 +390,11 @@ window.addEventListener("DOMContentLoaded", () => {
   document.getElementById("tab-qualified").onclick   = () => switchTab("qualified");
   document.getElementById("tab-transferred").onclick = () => switchTab("transferred");
 
-  // Manual sync (optional)
+  // Manual sync
   document.getElementById("syncNow").onclick = async () => {
-    // clear only our keys, keep other site settings
     localStorage.removeItem(CACHE_KEY);
     localStorage.removeItem(SYNC_KEY);
-    // note: we keep TRANSFERS_KEY append-only; if you want a fresh rebuild:
+    // If you want a complete rebuild of transfers during testing, uncomment:
     // localStorage.removeItem(TRANSFERS_KEY);
     await buildData({ forceSync: true });
   };
@@ -466,7 +447,7 @@ th { background:#0f62fe; color:#fff; }
 
 <div class="top-actions">
   <button id="syncNow" class="sync-btn">🔄 Sync Now</button>
-  <div class="small-note">TEMP TEST: Transfers are included only if date is after the 8th of the current month.</div>
+  <div class="small-note">TEMP TEST: Transfers remain visible until the 8th of the next month.</div>
 </div>
 
 <div id="loading">Loading…</div>
@@ -477,7 +458,7 @@ th { background:#0f62fe; color:#fff; }
 
 <div class="tabs">
   <button id="tab-qualified" class="tab-btn active-tab">Qualified Users (current ≥ $8)</button>
-  <button id="tab-transferred" class="tab-btn">Transferred (kept until next 6th)</button>
+  <button id="tab-transferred" class="tab-btn">Transferred (kept until next 8th TEMP)</button>
 </div>
 
 <!-- QUALIFIED -->
