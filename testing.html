@@ -108,7 +108,7 @@ function isAfterEighthOfCurrentMonth(dateStr) {
 function isTransferActive(dateStr) {
   const dt = parseAnyDate(dateStr);
   if (!dt) return false;
-  const cutoff = new Date(dt.getFullYear(), dt.getMonth() + 1, 6, 0, 0, 0, 0);
+  const cutoff = new Date(dt.getFullYear(), dt.getMonth() + 1, 8, 0, 0, 0, 0);
   return new Date() < cutoff;
 }
 
