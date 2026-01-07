@@ -385,15 +385,21 @@ function initTransferredFilterAndTable(docs) {
 }
 
 function applyTransferVisibility(){
-  const wrap = document.getElementById("panel-transferred");
-  const btn  = document.getElementById("toggleTransfers");
+  const tPanel = document.getElementById("panel-transferred");
+  const btn    = document.getElementById("toggleTransfers");
   const hidden = localStorage.getItem(UI_HIDE_KEY) === "1";
 
+  // Only apply when transferred tab is active
+  const transferredActive =
+    document.getElementById("tab-transferred").classList.contains("active-tab");
+
+  if (!transferredActive) return;
+
   if (hidden){
-    wrap.style.display = "none";
+    tPanel.style.display = "none";
     btn.textContent = "👁️ Show Transferred";
   } else {
-    wrap.style.display = "block";
+    tPanel.style.display = "block";
     btn.textContent = "🙈 Hide Transferred";
   }
 }
