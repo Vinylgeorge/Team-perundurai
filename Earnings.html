@@ -38,7 +38,7 @@ const MAIN_SHEET_CSV =
   "https://docs.google.com/spreadsheets/d/1mf2-AQ59CuboAWz8Fle3qXTFfAI3cnB7mrkqQF1lyCw/export?format=csv&gid=0";
 
 const TEAM_SHEET_CSV =
-  "https://docs.google.com/spreadsheets/d/1W0fYDHy8nePZ-rkqZAX2DVOEufSHe7UJfB7OeC49b1o/export?format=csv&gid=0";
+  "https://docs.google.com/spreadsheets/d/1mf2-AQ59CuboAWz8Fle3qXTFfAI3cnB7mrkqQF1lyCw/export?format=csv&gid=0";
 
 /* ======================================================
    STORAGE KEYS + STATE
@@ -146,12 +146,12 @@ function getWindow8to8() {
   const day = now.getDate();
 
   let start, endExclusive;
-  if (day >= 8) {
-    start = new Date(y, m, 8, 0, 0, 0, 0);
-    endExclusive = new Date(y, m + 1, 8, 0, 0, 0, 0);
+  if (day >= 10) {
+    start = new Date(y, m, 10, 0, 0, 0, 0);
+    endExclusive = new Date(y, m + 1, 10, 0, 0, 0, 0);
   } else {
-    start = new Date(y, m - 1, 8, 0, 0, 0, 0);
-    endExclusive = new Date(y, m, 8, 0, 0, 0, 0);
+    start = new Date(y, m - 1, 10, 0, 0, 0, 0);
+    endExclusive = new Date(y, m,10, 0, 0, 0, 0);
   }
   return { start, endExclusive };
 }
@@ -170,7 +170,7 @@ function isTransferActive(dateStr) {
 ====================================================== */
 function isPast8thThisMonth() {
   const now = new Date();
-  return now.getDate() > 8;
+  return now.getDate() > 10;
 }
 function shouldAutoHideTransfers() {
   return isPast8thThisMonth();
