@@ -231,10 +231,11 @@ function renderTransferred(){
 /* ============================
    TABS
 ============================ */
-function tab(t){
-  document.getElementById("pq").style.display=t==="q"?"block":"none";
-  document.getElementById("pt").style.display=t==="t"?"block":"none";
-}
+window.tab = function (t){
+  document.getElementById("pq").style.display = t === "q" ? "block" : "none";
+  document.getElementById("pt").style.display = t === "t" ? "block" : "none";
+};
+
 
 /* ============================
    INIT
