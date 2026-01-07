@@ -4,6 +4,9 @@
 <meta charset="UTF-8">
 <title>💰 MTurk Earnings Monitor (Qualified + Transferred)</title>
 
+<!-- SheetJS for Excel export -->
+<script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
+
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
 import { initializeFirestore, collection, getDocs } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
@@ -27,11 +30,28 @@ const earningsDB = initializeFirestore(earningsApp, {
 });
 
 /* ======================================================
+   GOOGLE SHEET URLS
+   - Main sheet used for Qualified/Transferred filtering
+   - Team sheet used for "All users" daily excel export
+====================================================== */
+const MAIN_SHEET_CSV =
+  "https://docs.google.com/spreadsheets/d/1mf2-AQ59CuboAWz8Fle3qXTFfAI3cnB7mrkqQF1lyCw/export?format=csv&gid=0";
+
+const TEAM_SHEET_CSV =
+  "https://docs.google.com/spreadsheets/d/1W0fYDHy8nePZ-rkqZAX2DVOEufSHe7UJfB7OeC49b1o/export?format=csv&gid=0";
+
+/* ======================================================
    STORAGE KEYS + STATE
 ====================================================== */
 const CACHE_KEY      = "earnings_cache_data";
 const SYNC_KEY       = "earnings_last_sync";
-const TRANSFERS_KEY  = "earnings_transfers_cache"; // append-only (retention rule below)
+const TRANSFERS_KEY  = "earnings_transfers_cache"; // append-only within window
+
+// Excel cache (optional, once-per-day)
+const EXCEL_EARN_KEY  = "excel_daily_earn_rows";
+const EXCEL_EARN_DATE = "excel_daily_earn_date";
+const EXCEL_TR_KEY    = "excel_transfers_rows";
+const EXCEL_TR_DATE   = "excel_transfers_date";
 
 let QUALIFIED_DATA   = [];
 let TRANSFERRED_DATA = [];
@@ -42,6 +62,13 @@ let TRANSFERRED_DATA = [];
 function today() { return new Date().toISOString().slice(0,10); }
 function needsSync() { return localStorage.getItem(SYNC_KEY) !== today(); }
 function markSynced() { localStorage.setItem(SYNC_KEY, today()); }
+
+function cleanCell(v){
+  return String(v ?? "")
+    .trim()
+    .replace(/^"+|"+$/g, "")   // strip surrounding quotes
+    .replace(/\r/g, "");
+}
 
 function toNum(v) {
   const n = parseFloat(String(v ?? "").replace(/[^\d.\-]/g, ""));
@@ -61,6 +88,7 @@ function parseAnyDate(dateStr) {
   const s = String(dateStr).trim();
   if (!s) return null;
 
+  // 1) MM/DD/YY or MM/DD/YYYY
   if (s.includes("/")) {
     const p = s.split("/");
     if (p.length === 3) {
@@ -75,6 +103,7 @@ function parseAnyDate(dateStr) {
     }
   }
 
+  // 2) "Nov 30, 2025" or any Date.parse-able string
   const t = Date.parse(s);
   if (!Number.isNaN(t)) return new Date(t);
 
@@ -108,10 +137,9 @@ function shouldConsiderMismatch(dateStr) {
 }
 
 /* ======================================================
-   DISPLAY WINDOW: 8th-to-8th (for showing transfers)
-   - This is only for display/filtering UI
+   TEMP WINDOW: 8th-to-8th (kept in cache)
 ====================================================== */
-function getWindow8to8ForToday() {
+function getWindow8to8() {
   const now = new Date();
   const y = now.getFullYear();
   const m = now.getMonth();
@@ -127,29 +155,18 @@ function getWindow8to8ForToday() {
   }
   return { start, endExclusive };
 }
-function isInDisplayWindow8to8(dateStr) {
+
+function isTransferActive(dateStr) {
   const dt = parseAnyDate(dateStr);
   if (!dt) return false;
-  const { start, endExclusive } = getWindow8to8ForToday();
+  const { start, endExclusive } = getWindow8to8();
   return dt >= start && dt < endExclusive;
 }
 
 /* ======================================================
-   CACHE RETENTION (IMPORTANT FIX)
-   - Each transfer entry remains ACTIVE until next-month-8th
-   - Example: 12/29/25 stays active until 01/08/26
-====================================================== */
-function isTransferActiveUntilNext8th(dateStr) {
-  const dt = parseAnyDate(dateStr);
-  if (!dt) return false;
-  const cutoff = new Date(dt.getFullYear(), dt.getMonth() + 1, 8, 0, 0, 0, 0);
-  return new Date() < cutoff;
-}
-
-/* ======================================================
-   UI VISIBILITY RULE (your request)
+   UI VISIBILITY RULE
    - Auto-hide transfers AFTER 8th is crossed (current month)
-   - Even after hidden, user can click "Show transfers" any time till month end
+   - user can click "Show Transfers" anytime till month end
 ====================================================== */
 function isPast8thThisMonth() {
   const now = new Date();
@@ -172,18 +189,18 @@ function saveTransfersCache(arr) {
 /*
   Transferred tab rules:
   - Show ONLY users from Google Sheet
-  - Cache is append-only; keep entries ACTIVE until their next-month-8th
+  - Cache is append-only inside 8-to-8 window
   - Highlight workerId for mismatch:
       lastMonthEarnings != lastTransferAmount
       ONLY if transfer date is in last month AND date >= 6
 */
 function refreshTransfersCacheFromDocs(allDocs, users, workers) {
-  // keep only still-active entries (per-transfer retention)
-  let cache = loadTransfersCache().filter(t => isTransferActiveUntilNext8th(t.date));
+  // keep only ACTIVE transfers (outside window auto-drops)
+  let cache = loadTransfersCache().filter(t => isTransferActive(t.date));
 
   for (const d of allDocs) {
-    const user = String(d.user || "").trim();
-    const wid  = String(d.workerId || d.id || "").trim();
+    const user = cleanCell(d.user || "");
+    const wid  = cleanCell(d.workerId || "");
 
     const inTeam = users.has(user) || workers.has(wid);
     if (!inTeam) continue;
@@ -193,16 +210,14 @@ function refreshTransfersCacheFromDocs(allDocs, users, workers) {
     if (!dt) continue;
     if (amt <= 0) continue;
 
-    // retention check (not display window check)
-    if (!isTransferActiveUntilNext8th(dt)) continue;
+    if (!isTransferActive(dt)) continue;
 
     const lm = toNum(d.lastMonthEarnings);
     const mismatch = (shouldConsiderMismatch(dt) && lm > 0 && amt > 0 && !nearlyEqual(lm, amt, 0.01)) ? 1 : 0;
 
-    // uniqueness: user+wid+amt+date (allows multiple transfers across different dates)
     const exists = cache.some(t =>
-      String(t.user || "").trim() === user &&
-      String(t.workerId || "").trim() === wid &&
+      cleanCell(t.user || "") === user &&
+      cleanCell(t.workerId || "") === wid &&
       Number(t.amount) === amt &&
       String(t.date) === String(dt)
     );
@@ -210,10 +225,9 @@ function refreshTransfersCacheFromDocs(allDocs, users, workers) {
     if (!exists) {
       cache.push({ user, workerId: wid, amount: amt, date: dt, mismatch });
     } else {
-      // if mismatch becomes true later, update the cached flag
       const idx = cache.findIndex(t =>
-        String(t.user || "").trim() === user &&
-        String(t.workerId || "").trim() === wid &&
+        cleanCell(t.user || "") === user &&
+        cleanCell(t.workerId || "") === wid &&
         Number(t.amount) === amt &&
         String(t.date) === String(dt)
       );
@@ -226,12 +240,10 @@ function refreshTransfersCacheFromDocs(allDocs, users, workers) {
 }
 
 /* ======================================================
-   GOOGLE SHEET (team list)
+   GOOGLE SHEET (main team list: used for filter)
 ====================================================== */
 async function loadMainCSV() {
-  const res = await fetch(
-    "https://docs.google.com/spreadsheets/d/1mf2-AQ59CuboAWz8Fle3qXTFfAI3cnB7mrkqQF1lyCw/export?format=csv&gid=0"
-  );
+  const res = await fetch(MAIN_SHEET_CSV);
   const text  = await res.text();
   const lines = text.split("\n").filter(Boolean);
 
@@ -239,11 +251,33 @@ async function loadMainCSV() {
   const workers = new Set();
 
   for (let i=1;i<lines.length;i++){
-    const [u, w] = lines[i].split(",");
-    if (u) users.add(String(u).trim());
-    if (w) workers.add(String(w).trim());
+    const parts = lines[i].split(",");
+    const u = cleanCell(parts[0]);
+    const w = cleanCell(parts[1]);
+    if (u) users.add(u);
+    if (w) workers.add(w);
   }
   return { users, workers };
+}
+
+/* ======================================================
+   TEAM CSV (for "Daily Earnings Excel" export)
+   Column A → user, Column B → workerId
+====================================================== */
+async function loadTeamCSV() {
+  const res = await fetch(TEAM_SHEET_CSV);
+  const text  = await res.text();
+  const lines = text.split("\n").filter(Boolean);
+
+  const teamMap = new Map(); // user -> workerId
+
+  for (let i=1;i<lines.length;i++){
+    const parts = lines[i].split(",");
+    const user = cleanCell(parts[0]);
+    const wid  = cleanCell(parts[1]);
+    if (user && wid) teamMap.set(user, wid);
+  }
+  return teamMap;
 }
 
 /* ======================================================
@@ -277,14 +311,14 @@ function updateCountdown() {
   const h = Math.floor(diff / (1000*60*60));
   const m = Math.floor((diff / (1000*60)) % 60);
 
-  const { start, endExclusive } = getWindow8to8ForToday();
+  const { start, endExclusive } = getWindow8to8();
   const winTxt = `${start.toLocaleDateString()} → ${new Date(endExclusive - 1).toLocaleDateString()}`;
 
   const hideTxt = shouldAutoHideTransfers()
     ? "Transfers auto-hidden (after 8th). Click “Show Transfers” anytime."
     : "Transfers visible (till 8th).";
 
-  el.innerHTML = `Next Auto Sync: <b>12:00 AM</b> (in ${h}h ${m}m) • Transfer Display Window: <b>${winTxt}</b> • ${hideTxt}`;
+  el.innerHTML = `Next Auto Sync: <b>12:00 AM</b> (in ${h}h ${m}m) • Transfer Window: <b>${winTxt}</b> • ${hideTxt}`;
 }
 
 /* ======================================================
@@ -310,8 +344,8 @@ async function buildData({ forceSync = false } = {}) {
   let sumQualifiedCurrent = 0;
 
   for (const d of docs) {
-    const user = String(d.user || "").trim();
-    const wid  = String(d.workerId || d.id || "").trim();
+    const user = cleanCell(d.user || "");
+    const wid  = cleanCell(d.workerId || "");
     if (!users.has(user) && !workers.has(wid)) continue;
 
     const current  = toNum(d.currentEarnings);
@@ -323,14 +357,13 @@ async function buildData({ forceSync = false } = {}) {
     }
   }
 
-  // Transferred (display window filter is applied here)
+  // Transferred (data exists always, UI may hide)
   TRANSFERRED_DATA = transfersCache
-    .filter(t => users.has(String(t.user || "").trim()) || workers.has(String(t.workerId || "").trim()))
-    .filter(t => isTransferActiveUntilNext8th(t.date))      // still active
-    .filter(t => isInDisplayWindow8to8(t.date))             // show only in 8-to-8 display window
+    .filter(t => users.has(cleanCell(t.user || "")) || workers.has(cleanCell(t.workerId || "")))
+    .filter(t => isTransferActive(t.date))
     .map(t => ({
-      user: String(t.user || "").trim(),
-      wid:  String(t.workerId || "").trim(),
+      user: cleanCell(t.user || ""),
+      wid:  cleanCell(t.workerId || ""),
       amount: Number(t.amount) || 0,
       date: t.date,
       mismatch: !!t.mismatch
@@ -354,7 +387,14 @@ async function buildData({ forceSync = false } = {}) {
 
   renderQualifiedTable();
   initTransferredFilterAndTable();
+
   applyTransfersVisibilityRule();
+
+  // invalidate excel caches when data changes
+  localStorage.removeItem(EXCEL_EARN_KEY);
+  localStorage.removeItem(EXCEL_EARN_DATE);
+  localStorage.removeItem(EXCEL_TR_KEY);
+  localStorage.removeItem(EXCEL_TR_DATE);
 
   loadingEl.style.display = "none";
 }
@@ -365,13 +405,6 @@ async function buildData({ forceSync = false } = {}) {
 function renderQualifiedTable() {
   const tbody = document.getElementById("qualified-body");
   tbody.innerHTML = "";
-
-  if (QUALIFIED_DATA.length === 0) {
-    const tr = document.createElement("tr");
-    tr.innerHTML = `<td colspan="4" style="text-align:center;color:#6b7280;">No qualified users.</td>`;
-    tbody.appendChild(tr);
-    return;
-  }
 
   for (const r of QUALIFIED_DATA) {
     const tr = document.createElement("tr");
@@ -439,8 +472,6 @@ function renderTransferredTable() {
 
 /* ======================================================
    TRANSFERS VISIBILITY
-   - Auto-hide only AFTER 8th crossed
-   - User can toggle show/hide anytime till month end
 ====================================================== */
 function setTransfersHidden(hidden) {
   const panel = document.getElementById("panel-transferred");
@@ -500,6 +531,132 @@ function switchTab(tab) {
 }
 
 /* ======================================================
+   EXCEL EXPORTS
+   1) Daily Earnings Excel (ALL USERS from TEAM_SHEET_CSV)
+   2) Transferred Excel (based on current transferred filter)
+====================================================== */
+function ensureXLSX() {
+  if (!window.XLSX) {
+    alert("XLSX not loaded. Check internet / CDN blocked.");
+    return false;
+  }
+  return true;
+}
+
+function buildDailyEarningsRowsFromDocs(docs, teamMap) {
+  const rows = [];
+
+  // index docs by workerId and also by user as fallback
+  const byWid = new Map();
+  const byUser = new Map();
+  for (const d of docs) {
+    const wid = cleanCell(d.workerId || "");
+    const user = cleanCell(d.user || "");
+    if (wid) byWid.set(wid, d);
+    if (user) byUser.set(user, d);
+  }
+
+  for (const [user, wid] of teamMap.entries()) {
+    const rec = byWid.get(wid) || byUser.get(user);
+    if (!rec) {
+      rows.push({
+        "User": user,
+        "Worker ID": wid,
+        "Current Earnings": "",
+        "Last Month Earnings": "",
+        "Next Transfer Date": "",
+        "Last Transfer Amount": "",
+        "Last Transfer Date": ""
+      });
+      continue;
+    }
+
+    rows.push({
+      "User": user,
+      "Worker ID": wid,
+      "Current Earnings": cleanCell(rec.currentEarnings ?? ""),
+      "Last Month Earnings": cleanCell(rec.lastMonthEarnings ?? ""),
+      "Next Transfer Date": cleanCell(rec.nextTransferDate ?? rec.lastTransferDate ?? ""),
+      "Last Transfer Amount": cleanCell(rec.lastTransferAmount ?? ""),
+      "Last Transfer Date": cleanCell(rec.lastTransferDate ?? "")
+    });
+  }
+
+  return rows;
+}
+
+function getFilteredTransferredForExport() {
+  const filterVal = document.getElementById("transferDateFilter")?.value || "";
+  const data = TRANSFERRED_DATA.filter(r => {
+    const display = fmtDate(r.date);
+    if (!filterVal) return true;
+    return display === filterVal;
+  });
+
+  return data.map(r => ({
+    "User": r.user,
+    "Worker ID": r.wid,
+    "Transferred Amount": Number(r.amount || 0).toFixed(2),
+    "Transferred Date": fmtDate(r.date),
+    "Mismatch (check)": r.mismatch ? "YES" : ""
+  }));
+}
+
+async function exportDailyEarningsExcel() {
+  if (!ensureXLSX()) return;
+
+  // Use once-per-day cached rows if available
+  if (localStorage.getItem(EXCEL_EARN_DATE) === today()) {
+    const cached = JSON.parse(localStorage.getItem(EXCEL_EARN_KEY) || "[]");
+    if (cached.length) return writeExcel(cached, "Daily Earnings", `Daily_Earnings_AllUsers_${today()}.xlsx`);
+  }
+
+  // Do NOT force extra Firestore read here.
+  const docs = loadCache();
+  if (!docs.length) {
+    alert("No cached Firestore data yet. Click 🔄 Sync Now once, then export.");
+    return;
+  }
+
+  const teamMap = await loadTeamCSV();
+  const rows = buildDailyEarningsRowsFromDocs(docs, teamMap);
+
+  localStorage.setItem(EXCEL_EARN_KEY, JSON.stringify(rows));
+  localStorage.setItem(EXCEL_EARN_DATE, today());
+
+  writeExcel(rows, "Daily Earnings", `Daily_Earnings_AllUsers_${today()}.xlsx`);
+}
+
+async function exportTransferredExcel() {
+  if (!ensureXLSX()) return;
+
+  // once-per-day cache for transferred export
+  const key = (localStorage.getItem("transferDateFilter_last") || "") + "|" + today();
+  const cacheKey = EXCEL_TR_KEY + "::" + key;
+
+  const cached = JSON.parse(localStorage.getItem(cacheKey) || "[]");
+  if (cached.length) return writeExcel(cached, "Transferred", `Transferred_Report_${today()}.xlsx`);
+
+  const rows = getFilteredTransferredForExport();
+  if (!rows.length) {
+    alert("No transferred records for current filter.");
+    return;
+  }
+
+  localStorage.setItem(cacheKey, JSON.stringify(rows));
+  localStorage.setItem(EXCEL_TR_DATE, today());
+
+  writeExcel(rows, "Transferred", `Transferred_Report_${today()}.xlsx`);
+}
+
+function writeExcel(rows, sheetName, fileName) {
+  const ws = XLSX.utils.json_to_sheet(rows);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, sheetName);
+  XLSX.writeFile(wb, fileName);
+}
+
+/* ======================================================
    INIT
 ====================================================== */
 window.addEventListener("DOMContentLoaded", () => {
@@ -511,6 +668,20 @@ window.addEventListener("DOMContentLoaded", () => {
 
   document.getElementById("syncNow").onclick = () => buildData({ forceSync: true });
   document.getElementById("toggleTransfers").onclick = toggleTransfersVisibility;
+
+  document.getElementById("downloadDailyExcel").onclick = exportDailyEarningsExcel;
+  document.getElementById("downloadTransfersExcel").onclick = () => {
+    // remember last filter selection for cache key stability
+    const f = document.getElementById("transferDateFilter")?.value || "";
+    localStorage.setItem("transferDateFilter_last", f);
+    exportTransferredExcel();
+  };
+
+  // when filter changes, update cache key context
+  document.getElementById("transferDateFilter").addEventListener("change", () => {
+    const f = document.getElementById("transferDateFilter")?.value || "";
+    localStorage.setItem("transferDateFilter_last", f);
+  });
 
   switchTab("qualified");
   buildData();
@@ -585,6 +756,26 @@ th { background:#0f62fe; color:#fff; }
   font-size:12px;
 }
 
+/* Excel buttons */
+.excel-bar{
+  display:flex;
+  justify-content:center;
+  gap:10px;
+  flex-wrap:wrap;
+  margin:10px 0 8px 0;
+}
+.excel-btn{
+  background:#0d9488;
+  color:#fff;
+  padding:7px 12px;
+  border:none;
+  border-radius:8px;
+  cursor:pointer;
+  font-weight:800;
+  font-size:13px;
+}
+.excel-btn:hover{ background:#0f766e; }
+
 /* Soft hide (keeps tab clickable, just collapses) */
 .soft-hidden{
   display:none !important;
@@ -606,6 +797,12 @@ th { background:#0f62fe; color:#fff; }
 <div class="summary-bar" id="totalTransferred"></div>
 <div id="next-sync"></div>
 
+<!-- Excel buttons (global) -->
+<div class="excel-bar">
+  <button id="downloadDailyExcel" class="excel-btn">📥 Daily Earnings Excel (All Users)</button>
+  <button id="downloadTransfersExcel" class="excel-btn">📥 Transferred Excel (Current Filter)</button>
+</div>
+
 <div class="tabs">
   <button id="tab-qualified" class="tab-btn active-tab">Qualified Users (current ≥ $8)</button>
   <button id="tab-transferred" class="tab-btn">Transferred (window)</button>
@@ -626,7 +823,7 @@ th { background:#0f62fe; color:#fff; }
   </table>
 </div>
 
-<!-- TRANSFERRED WRAP -->
+<!-- TRANSFERRED WRAP (tab panel) -->
 <div id="panel-transferred-wrap" class="table-wrap" style="display:none;">
 
   <div class="transfer-tools">
