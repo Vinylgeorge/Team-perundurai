@@ -485,25 +485,7 @@ async function exportExcelReport(){
 /* ======================================================
    TABS
 ====================================================== */
-function switchTab(tab) {
-  const qTabBtn = document.getElementById("tab-qualified");
-  const tTabBtn = document.getElementById("tab-transferred");
-  const qPanel  = document.getElementById("panel-qualified");
 
-  if (tab === "qualified") {
-    qTabBtn.classList.add("active-tab");
-    tTabBtn.classList.remove("active-tab");
-    qPanel.style.display = "block";
-    // transferred panel visibility handled by toggle
-    applyTransferVisibility();
-  } else {
-    tTabBtn.classList.add("active-tab");
-    qTabBtn.classList.remove("active-tab");
-    qPanel.style.display = "none";
-    // show/hide still respected
-    applyTransferVisibility();
-  }
-}
 
 /* ======================================================
    INIT
