@@ -8,8 +8,11 @@
 
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-import { initializeFirestore, collection, getDocs } from "https://www.gstatic.com/firebasejs/10.EPd:40b9c9df75d3125f3a99cd"
-};
+import {
+  initializeFirestore,
+  collection,
+  getDocs
+} from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
 const earningsApp = initializeApp(earningsConfig, "earningsApp");
 const earningsDB = initializeFirestore(earningsApp, {
