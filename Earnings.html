@@ -2,22 +2,18 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>💰 Daily MTurk Earnings Monitor</title>
+<title>💰 MTurk Earnings Monitor (Qualified + Transferred)</title>
+
+<!-- SheetJS for Excel export -->
+<script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
 
 <script type="module">
-/* ============================
-   FIREBASE IMPORTS
-============================ */
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-import {
-  initializeFirestore,
-  collection,
-  getDocs
-} from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+import { initializeFirestore, collection, getDocs } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
-/* ============================
+/* ======================================================
    FIREBASE CONFIG
-============================ */
+====================================================== */
 const earningsConfig = {
   apiKey: "AIzaSyBTFpM3fs7kWBrZL4yOi9tquUTp1HhH7L8",
   authDomain: "mturk-monitordeep.firebaseapp.com",
@@ -27,49 +23,110 @@ const earningsConfig = {
   appId: "1:505786000194:web:40b9c9df75d3125f3a99cd"
 };
 
-const app = initializeApp(earningsConfig);
-const db = initializeFirestore(app, {
+const earningsApp = initializeApp(earningsConfig, "earningsApp");
+const earningsDB = initializeFirestore(earningsApp, {
   experimentalForceLongPolling: true,
   useFetchStreams: false
 });
 
-/* ============================
-   STORAGE KEYS
-============================ */
-const CACHE_KEY = "earnings_cache_data";
-const SYNC_KEY  = "earnings_last_sync";
-const TRANSFER_KEY = "earnings_transfers_cache";
+/* ======================================================
+   CONSTANTS + STATE
+====================================================== */
+const CACHE_KEY         = "earnings_cache_data";
+const SYNC_KEY          = "earnings_last_sync";
+const TRANSFERS_KEY     = "earnings_transfers_cache";  // append-only until expiry
+const EXCEL_KEY         = "earnings_excel_cache";
+const EXCEL_DATE_KEY    = "earnings_excel_cache_date";
+const TRANSFER_VIEW_KEY = "transfers_view_override_month"; // allow “click to view” after 8th
 
-/* ============================
-   HELPERS
-============================ */
-function today(){ return new Date().toISOString().slice(0,10); }
-function needsSync(){ return localStorage.getItem(SYNC_KEY) !== today(); }
-function markSynced(){ localStorage.setItem(SYNC_KEY, today()); }
+let QUALIFIED_DATA   = [];
+let TRANSFERRED_DATA = [];
 
-function parseDate(v){
-  if(!v) return null;
-  const d = new Date(v);
-  return isNaN(d) ? null : d;
+/* ======================================================
+   DATE HELPERS (robust)
+====================================================== */
+function todayISO() { return new Date().toISOString().slice(0, 10); }
+function needsSync() { return localStorage.getItem(SYNC_KEY) !== todayISO(); }
+function markSynced() { localStorage.setItem(SYNC_KEY, todayISO()); }
+
+function monthKey(dt = new Date()) {
+  return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}`;
 }
 
-function isAfterFifth(d){
-  const dt = parseDate(d);
-  return dt && dt.getDate() > 5;
+/* supports:
+   - "11/17/25" or "11/17/2025"
+   - "Nov 30, 2025"
+   - ISO / Date.parse-able strings
+*/
+function parseAnyDate(dateStr) {
+  if (!dateStr) return null;
+  const s = String(dateStr).trim();
+  if (!s) return null;
+
+  // MM/DD/YY or MM/DD/YYYY
+  if (s.includes("/")) {
+    const p = s.split("/");
+    if (p.length === 3) {
+      const m = parseInt(p[0], 10);
+      const d = parseInt(p[1], 10);
+      let y = parseInt(p[2], 10);
+      if ([m, d, y].some(Number.isNaN)) return null;
+      if (y < 100) y = 2000 + y;
+      const dt = new Date(y, m - 1, d);
+      if (!Number.isFinite(dt.getTime())) return null;
+      return dt;
+    }
+  }
+
+  const t = Date.parse(s);
+  if (!Number.isNaN(t)) return new Date(t);
+  return null;
 }
 
-/* TEMP RULE: visible until 8th of next month */
-function isActiveTill8th(d){
-  const dt = parseDate(d);
-  if(!dt) return false;
-  const cutoff = new Date(dt.getFullYear(), dt.getMonth()+1, 8);
+function fmtDate(dateStr) {
+  const dt = parseAnyDate(dateStr);
+  if (!dt) return (dateStr || "—");
+  return dt.toLocaleDateString();
+}
+
+// after 5th based on transfer date (exclude 1..5)
+function isAfterFifth(dateStr) {
+  const dt = parseAnyDate(dateStr);
+  if (!dt) return false;
+  return dt.getDate() > 5;
+}
+
+/* TEMP RULE (your testing requirement):
+   Transfer entry stays "active/visible window" until 8th of the NEXT month.
+   Example: 12/29/25 -> cutoff 01/08/26
+*/
+function isTransferActiveTill8thNextMonth(dateStr) {
+  const dt = parseAnyDate(dateStr);
+  if (!dt) return false;
+  const cutoff = new Date(dt.getFullYear(), dt.getMonth() + 1, 8, 0, 0, 0, 0);
   return new Date() < cutoff;
 }
 
-/* ============================
-   LOAD TEAM CSV
-============================ */
-async function loadTeam(){
+/* Hide transfers by default AFTER 8th of CURRENT month,
+   but allow clicking “Show transfers anyway” until month end.
+*/
+function shouldHideTransfersNow() {
+  const now = new Date();
+  return now.getDate() > 8; // after 8th crossed
+}
+
+function transfersViewOverrideEnabled() {
+  return localStorage.getItem(TRANSFER_VIEW_KEY) === monthKey(new Date());
+}
+
+function enableTransfersViewOverride() {
+  localStorage.setItem(TRANSFER_VIEW_KEY, monthKey(new Date()));
+}
+
+/* ======================================================
+   GOOGLE SHEET (team list) - for Qualified + Transferred filter
+====================================================== */
+async function loadMainCSV() {
   const res = await fetch(
     "https://docs.google.com/spreadsheets/d/1mf2-AQ59CuboAWz8Fle3qXTFfAI3cnB7mrkqQF1lyCw/export?format=csv&gid=0"
   );
@@ -79,214 +136,706 @@ async function loadTeam(){
   const users = new Set();
   const workers = new Set();
 
-  for(let i=1;i<lines.length;i++){
-    const [u,w] = lines[i].split(",");
-    if(u) users.add(u.trim());
-    if(w) workers.add(w.trim());
+  // detect header positions (safe even if columns move)
+  const header = (lines[0] || "").split(",").map(x => x.trim().toLowerCase());
+  const uidx = header.findIndex(h => h === "user" || h.includes("user"));
+  const widx = header.findIndex(h => h === "workerid" || h.includes("worker"));
+
+  for (let i = 1; i < lines.length; i++) {
+    const cols = lines[i].split(",");
+    const u = (cols[uidx] ?? cols[0] ?? "").trim();
+    const w = (cols[widx] ?? cols[1] ?? "").trim();
+    if (u) users.add(u);
+    if (w) workers.add(w);
   }
-  return {users, workers};
+
+  return { users, workers };
 }
 
-/* ============================
-   FIRESTORE FETCH (DAILY)
-============================ */
-async function fetchDocs(){
-  const snap = await getDocs(collection(db, "earnings_logs"));
+/* ======================================================
+   FIRESTORE FETCH (ONCE PER DAY)
+====================================================== */
+async function fetchFromFirestore() {
+  const snap = await getDocs(collection(earningsDB, "earnings_logs"));
   const arr = [];
-  snap.forEach(d=>arr.push({id:d.id,...d.data()}));
+  snap.forEach(d => arr.push({ id: d.id, ...d.data() }));
+
   localStorage.setItem(CACHE_KEY, JSON.stringify(arr));
   markSynced();
   return arr;
 }
 
-function loadCache(){
-  return JSON.parse(localStorage.getItem(CACHE_KEY)||"[]");
+function loadCache() {
+  return JSON.parse(localStorage.getItem(CACHE_KEY) || "[]");
 }
 
-/* ============================
-   TRANSFER CACHE (APPEND)
-============================ */
-function loadTransferCache(){
-  return JSON.parse(localStorage.getItem(TRANSFER_KEY)||"[]");
+/* ======================================================
+   TRANSFERS CACHE (localStorage) - append only, expire by date window
+====================================================== */
+function loadTransfersCache() {
+  return JSON.parse(localStorage.getItem(TRANSFERS_KEY) || "[]");
 }
-function saveTransferCache(v){
-  localStorage.setItem(TRANSFER_KEY, JSON.stringify(v));
+function saveTransfersCache(arr) {
+  localStorage.setItem(TRANSFERS_KEY, JSON.stringify(arr));
 }
 
-function refreshTransfers(docs, users, workers){
-  let cache = loadTransferCache().filter(t=>isActiveTill8th(t.date));
+/* MISMATCH RULE (final):
+   - ONLY consider mismatch when transfer date is:
+       previous month AND day >= 6 AND day <= last day of that month
+   - Do NOT consider transfers on 1..5 (already excluded by isAfterFifth)
+   - Highlight ONLY in transferred section (Worker ID cell)
+*/
+function isMismatchWindowPrevMonth(dateStr) {
+  const dt = parseAnyDate(dateStr);
+  if (!dt) return false;
 
-  for(const d of docs){
-    const user = (d.user||"").trim();
-    const wid  = (d.workerId||d.id||"").trim();
+  const now = new Date();
+  // previous month of "now"
+  const prevMonthFirst = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  const prevMonthLast  = new Date(now.getFullYear(), now.getMonth(), 0); // last day of prev month
 
-    if(!users.has(user) && !workers.has(wid)) continue;
+  const inPrevMonth =
+    dt.getFullYear() === prevMonthFirst.getFullYear() &&
+    dt.getMonth() === prevMonthFirst.getMonth();
 
-    const amt = Number(d.lastTransferAmount||0);
-    const dt  = d.lastTransferDate;
+  if (!inPrevMonth) return false;
+  if (dt.getDate() < 6) return false;
+  if (dt.getDate() > prevMonthLast.getDate()) return false;
 
-    if(amt<8) continue;
-    if(!isAfterFifth(dt)) continue;
-    if(!isActiveTill8th(dt)) continue;
+  return true;
+}
 
-    const exists = cache.some(t=>
-      t.user===user &&
-      t.wid===wid &&
-      t.amount===amt &&
-      t.date===dt
+/*
+  Refresh transfers cache using Firestore docs.
+  - ALWAYS keep only active entries (till next-month-8th) in cache
+  - ADD new transfers (append-only) for TEAM users only
+  - Only add transfers if:
+      amount >= 8
+      lastTransferDate present
+      date > 5 (excludes 1..5)
+      still active till next-month-8th
+  - Allow multiple transfers (different date/amount) for same user
+*/
+function refreshTransfersCacheFromDocs(allDocs, users, workers) {
+  // keep only still-active items
+  let cache = loadTransfersCache().filter(t => isTransferActiveTill8thNextMonth(t.date));
+
+  for (const d of allDocs) {
+    const user = (d.user || "").trim();
+    const wid  = (d.workerId || d.id || "").trim();
+
+    // must be in team sheet
+    if (!users.has(user) && !workers.has(wid)) continue;
+
+    const amt = Number(d.lastTransferAmount || 0);
+    const dt  = d.lastTransferDate || "";
+
+    if (amt < 8) continue;
+    if (!dt) continue;
+    if (!isAfterFifth(dt)) continue; // excludes 1..5
+    if (!isTransferActiveTill8thNextMonth(dt)) continue;
+
+    // uniqueness key
+    const exists = cache.some(t =>
+      (t.user || "") === user &&
+      (t.workerId || "") === wid &&
+      Number(t.amount) === amt &&
+      String(t.date) === String(dt)
     );
 
-    if(!exists){
-      const lm = Number(d.lastMonthEarnings||0);
+    if (!exists) {
+      const lm = Number(d.lastMonthEarnings || 0);
       const mismatch =
-        lm>0 && Math.abs(lm-amt)>0.01 &&
-        parseDate(dt)?.getDate()>=6;
+        isMismatchWindowPrevMonth(dt) &&
+        lm > 0 &&
+        Math.abs(lm - amt) > 0.01;
 
       cache.push({
-        user, wid,
-        amount:amt,
-        date:dt,
-        mismatch
+        user,
+        workerId: wid,
+        amount: amt,
+        date: dt,
+        mismatch: !!mismatch
       });
     }
   }
-  saveTransferCache(cache);
+
+  saveTransfersCache(cache);
   return cache;
 }
 
-/* ============================
-   BUILD DATA
-============================ */
-let QUAL=[], TRANS=[];
+/* ======================================================
+   COUNTDOWN (midnight)
+====================================================== */
+function updateCountdown() {
+  const el = document.getElementById("next-sync");
+  if (!el) return;
 
-async function build(){
-  const {users,workers} = await loadTeam();
-  const docs = needsSync()? await fetchDocs() : loadCache();
+  const now = new Date();
+  const next = new Date();
+  next.setHours(24, 0, 0, 0);
 
-  const transfers = refreshTransfers(docs, users, workers);
+  const diff = next - now;
+  const h = Math.floor(diff / (1000 * 60 * 60));
+  const m = Math.floor((diff / (1000 * 60)) % 60);
 
-  QUAL=[];
-  TRANS=[];
+  el.innerHTML = `Next Auto Sync: <b>12:00 AM</b> (in ${h}h ${m}m)`;
+}
 
-  let sumQ=0, sumT=0;
+/* ======================================================
+   BUILD DATA (both tabs)
+   Qualified: currentEarnings >= 8 (team only)
+   Transferred: cached transfers (team only)
+   TotalQualified = sum(current>=8) + sum(active transfers)
+====================================================== */
+async function buildData({ forceSync = false } = {}) {
+  const loadingEl = document.getElementById("loading");
+  const totalQEl  = document.getElementById("totalQualified");
+  const totalTEl  = document.getElementById("totalTransferred");
 
-  for(const d of docs){
-    const user=(d.user||"").trim();
-    const wid =(d.workerId||d.id||"").trim();
-    if(!users.has(user)&&!workers.has(wid)) continue;
+  loadingEl.style.display = "block";
 
-    const cur=Number(d.currentEarnings||0);
-    if(cur>=8){
-      QUAL.push({user,wid,cur,next:d.nextTransferDate||"-"});
-      sumQ+=cur;
+  const { users, workers } = await loadMainCSV();
+
+  let docs;
+  if (forceSync || needsSync()) docs = await fetchFromFirestore();
+  else docs = loadCache();
+
+  // update transfers cache (append-only) - only when Firestore was read
+  const transfersActive = refreshTransfersCacheFromDocs(docs, users, workers);
+
+  // Qualified
+  QUALIFIED_DATA = [];
+  let sumQualifiedCurrent = 0;
+
+  for (const d of docs) {
+    const user = (d.user || "").trim();
+    const wid  = (d.workerId || d.id || "").trim();
+
+    if (!users.has(user) && !workers.has(wid)) continue;
+
+    const current  = Number(d.currentEarnings || 0);
+    const nextDate = d.nextTransferDate || d.lastTransferDate || "—";
+
+    if (current >= 8) {
+      QUALIFIED_DATA.push({ user, wid, current, nextDate });
+      sumQualifiedCurrent += current;
     }
   }
 
-  for(const t of transfers){
-    TRANS.push(t);
-    sumT+=t.amount;
+  // Transferred (active)
+  TRANSFERRED_DATA = transfersActive
+    .filter(t => users.has((t.user || "").trim()) || workers.has((t.workerId || "").trim()))
+    .filter(t => (Number(t.amount) || 0) >= 8 && isAfterFifth(t.date) && isTransferActiveTill8thNextMonth(t.date))
+    .map(t => ({
+      user: (t.user || "").trim(),
+      wid: (t.workerId || "").trim(),
+      amount: Number(t.amount) || 0,
+      date: t.date,
+      mismatch: !!t.mismatch
+    }));
+
+  const sumTransfersActive = TRANSFERRED_DATA.reduce((a, x) => a + (x.amount || 0), 0);
+  const finalQualifiedTotal = sumQualifiedCurrent + sumTransfersActive;
+
+  QUALIFIED_DATA.sort((a, b) => b.current - a.current);
+  TRANSFERRED_DATA.sort((a, b) => b.amount - a.amount);
+
+  totalQEl.innerHTML =
+    `Qualified (current ≥ $8) + Active Transfers: <b>$${finalQualifiedTotal.toFixed(2)}</b> (${QUALIFIED_DATA.length} users)`;
+
+  totalTEl.innerHTML =
+    `Transferred (active till next 8th): <b>$${sumTransfersActive.toFixed(2)}</b> (${TRANSFERRED_DATA.length} transfers)`;
+
+  renderQualifiedTable();
+  initTransferredFilterAndTable();
+  updateTransfersVisibilityUI();
+
+  loadingEl.style.display = "none";
+}
+
+/* ======================================================
+   RENDER – QUALIFIED TAB
+====================================================== */
+function renderQualifiedTable() {
+  const tbody = document.getElementById("qualified-body");
+  tbody.innerHTML = "";
+
+  if (QUALIFIED_DATA.length === 0) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td colspan="4" style="text-align:center;color:#6b7280;">No qualified users (current ≥ $8).</td>`;
+    tbody.appendChild(tr);
+    return;
   }
 
-  document.getElementById("sumQ").innerHTML =
-    `Qualified (current ≥ $8) + Active Transfers: <b>$${(sumQ+sumT).toFixed(2)}</b>`;
-
-  document.getElementById("sumT").innerHTML =
-    `Transferred (8th–8th): <b>$${sumT.toFixed(2)}</b>`;
-
-  renderQualified();
-  renderTransferred();
+  for (const r of QUALIFIED_DATA) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${r.user}</td>
+      <td>${r.wid}</td>
+      <td style="color:#15803d;font-weight:bold">${r.current.toFixed(2)}</td>
+      <td>${r.nextDate || "—"}</td>
+    `;
+    tbody.appendChild(tr);
+  }
 }
 
-/* ============================
-   RENDER TABLES
-============================ */
-function renderQualified(){
-  const tb=document.getElementById("qbody");
-  tb.innerHTML="";
-  QUAL.forEach(r=>{
-    tb.innerHTML+=`
-      <tr>
-        <td>${r.user}</td>
-        <td>${r.wid}</td>
-        <td style="color:green;font-weight:700">${r.cur.toFixed(2)}</td>
-        <td>${r.next}</td>
-      </tr>`;
+/* ======================================================
+   RENDER – TRANSFERRED TAB + DATE FILTER
+====================================================== */
+function initTransferredFilterAndTable() {
+  const select = document.getElementById("transferDateFilter");
+
+  const dates = Array.from(
+    new Set(TRANSFERRED_DATA.map(r => fmtDate(r.date)).filter(Boolean))
+  ).sort((a, b) => new Date(a) - new Date(b));
+
+  select.innerHTML = `<option value="">All Dates</option>`;
+  for (const d of dates) {
+    const opt = document.createElement("option");
+    opt.value = d;
+    opt.textContent = d;
+    select.appendChild(opt);
+  }
+
+  select.onchange = () => renderTransferredTable();
+  renderTransferredTable();
+}
+
+function renderTransferredTable() {
+  const tbody = document.getElementById("transferred-body");
+  const filterVal = document.getElementById("transferDateFilter").value;
+  tbody.innerHTML = "";
+
+  const data = TRANSFERRED_DATA.filter(r => {
+    const display = fmtDate(r.date);
+    if (!filterVal) return true;
+    return display === filterVal;
   });
+
+  if (data.length === 0) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td colspan="4" style="text-align:center;color:#6b7280;">No transferred records for this filter.</td>`;
+    tbody.appendChild(tr);
+    return;
+  }
+
+  for (const r of data) {
+    const widCell = r.mismatch
+      ? `<td class="mismatch-wid" title="Mismatch: lastMonthEarnings != lastTransferAmount (prev month, day>=6 only)">${r.wid}</td>`
+      : `<td>${r.wid}</td>`;
+
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${r.user}</td>
+      ${widCell}
+      <td style="color:#b91c1c;font-weight:bold">${r.amount.toFixed(2)}</td>
+      <td>${fmtDate(r.date)}</td>
+    `;
+    tbody.appendChild(tr);
+  }
 }
 
-function renderTransferred(){
-  const tb=document.getElementById("tbody");
-  tb.innerHTML="";
-  TRANS.forEach(r=>{
-    tb.innerHTML+=`
-      <tr>
-        <td>${r.user}</td>
-        <td class="${r.mismatch?"mismatch":""}">${r.wid}</td>
-        <td style="color:#b91c1c;font-weight:700">${r.amount.toFixed(2)}</td>
-        <td>${new Date(r.date).toLocaleDateString()}</td>
-      </tr>`;
-  });
-}
+/* ======================================================
+   TRANSFERS VISIBILITY RULE (after 8th hide by default, but clickable to view)
+====================================================== */
+function updateTransfersVisibilityUI() {
+  const gate = document.getElementById("transfersGate");
+  const panel = document.getElementById("transfersPanelInner");
+  const btn = document.getElementById("showTransfersAnywayBtn");
+  const note = document.getElementById("transfersHiddenNote");
 
-/* ============================
-   TABS
-============================ */
-window.tab = function (t){
-  document.getElementById("pq").style.display = t === "q" ? "block" : "none";
-  document.getElementById("pt").style.display = t === "t" ? "block" : "none";
-};
+  const hideNow = shouldHideTransfersNow();
+  const override = transfersViewOverrideEnabled();
 
+  // before/through 8th: show normally
+  if (!hideNow) {
+    gate.style.display = "none";
+    panel.style.display = "block";
+    return;
+  }
 
-/* ============================
-   INIT
-============================ */
-window.onload=()=>{
-  document.getElementById("sync").onclick=()=>{
-    localStorage.removeItem(SYNC_KEY);
-    build();
+  // after 8th: default hidden, but allow override
+  if (override) {
+    gate.style.display = "none";
+    panel.style.display = "block";
+    return;
+  }
+
+  // hidden mode
+  gate.style.display = "block";
+  panel.style.display = "none";
+  note.textContent = "Transfers are hidden after the 8th (temporary rule). Click to view anytime until month end.";
+  btn.onclick = () => {
+    enableTransfersViewOverride();
+    updateTransfersVisibilityUI();
   };
-  build();
-};
+}
+
+/* ======================================================
+   TEAM CSV (Excel Export – all users)
+   (your team sheet)
+====================================================== */
+async function loadTeamCSV() {
+  const res = await fetch(
+    "https://docs.google.com/spreadsheets/d/1W0fYDHy8nePZ-rkqZAX2DVOEufSHe7UJfB7OeC49b1o/export?format=csv&gid=0"
+  );
+  const text = await res.text();
+  const lines = text.split("\n").filter(Boolean);
+
+  // header safe
+  const header = (lines[0] || "").split(",").map(x => x.trim().toLowerCase());
+  const uidx = header.findIndex(h => h === "user" || h.includes("user"));
+  const widx = header.findIndex(h => h === "workerid" || h.includes("worker"));
+
+  const teamMap = new Map(); // User -> workerId
+  for (let i = 1; i < lines.length; i++) {
+    const cols = lines[i].split(",");
+    const user = (cols[uidx] ?? cols[0] ?? "").trim();
+    const wid  = (cols[widx] ?? cols[1] ?? "").trim();
+    if (user && wid) teamMap.set(user, wid);
+  }
+  return teamMap;
+}
+
+function buildExcelRows(rawData, teamMap) {
+  const rows = [];
+
+  // index firestore by workerId AND by doc.id fallback
+  const byWid = new Map();
+  for (const r of rawData) {
+    const wid = (r.workerId || "").trim();
+    const id  = (r.id || "").trim();
+    if (wid) byWid.set(wid, r);
+    if (id && !byWid.has(id)) byWid.set(id, r);
+  }
+
+  for (const [user, wid] of teamMap.entries()) {
+    const match = byWid.get(wid);
+    if (!match) continue;
+
+    rows.push({
+      "User": user,
+      "Worker ID": wid,
+      "Current Earnings": match.currentEarnings ?? "",
+      "Last Month Earnings": match.lastMonthEarnings ?? "",
+      "Next Transfer Date": match.nextTransferDate || match.lastTransferDate || "—",
+      "Last Transfer Amount": match.lastTransferAmount ?? ""
+    });
+  }
+
+  return rows;
+}
+
+function excelNeedsBuild() {
+  return localStorage.getItem(EXCEL_DATE_KEY) !== todayISO();
+}
+
+async function exportExcelReport() {
+  // Build only once per day
+  if (excelNeedsBuild()) {
+    const teamMap = await loadTeamCSV();
+    const allDocs = needsSync() ? await fetchFromFirestore() : loadCache();
+
+    if (!allDocs || allDocs.length === 0) {
+      alert("No Firestore data available to export.");
+      return;
+    }
+
+    const rows = buildExcelRows(allDocs, teamMap);
+    localStorage.setItem(EXCEL_KEY, JSON.stringify(rows));
+    localStorage.setItem(EXCEL_DATE_KEY, todayISO());
+  }
+
+  const rows = JSON.parse(localStorage.getItem(EXCEL_KEY) || "[]");
+  if (!rows || rows.length === 0) {
+    alert("No matching records found for team sheet.");
+    return;
+  }
+
+  const ws = XLSX.utils.json_to_sheet(rows);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Earnings");
+
+  XLSX.writeFile(wb, `Daily_Earnings_Report_${todayISO()}.xlsx`);
+}
+
+/* ======================================================
+   TABS
+====================================================== */
+function switchTab(tab) {
+  const qTabBtn = document.getElementById("tab-qualified");
+  const tTabBtn = document.getElementById("tab-transferred");
+  const qPanel  = document.getElementById("panel-qualified");
+  const tPanel  = document.getElementById("panel-transferred");
+
+  if (tab === "qualified") {
+    qTabBtn.classList.add("active-tab");
+    tTabBtn.classList.remove("active-tab");
+    qPanel.style.display = "block";
+    tPanel.style.display = "none";
+  } else {
+    tTabBtn.classList.add("active-tab");
+    qTabBtn.classList.remove("active-tab");
+    tPanel.style.display = "block";
+    qPanel.style.display = "none";
+    // when switching to transfers, apply gate logic
+    updateTransfersVisibilityUI();
+  }
+}
+
+/* ======================================================
+   INIT
+====================================================== */
+window.addEventListener("DOMContentLoaded", () => {
+  updateCountdown();
+  setInterval(updateCountdown, 60000);
+
+  document.getElementById("downloadExcel").addEventListener("click", exportExcelReport);
+
+  document.getElementById("tab-qualified").addEventListener("click", () => switchTab("qualified"));
+  document.getElementById("tab-transferred").addEventListener("click", () => switchTab("transferred"));
+
+  document.getElementById("syncNow").addEventListener("click", () => buildData({ forceSync: true }));
+
+  // default
+  switchTab("qualified");
+  buildData();
+});
 </script>
 
 <style>
-body{font-family:Segoe UI;background:#f8fafc;padding:20px}
-h1{text-align:center;color:#0f62fe}
-button{padding:6px 12px;border-radius:6px;border:none;cursor:pointer}
-table{width:95%;margin:auto;border-collapse:collapse;background:#fff}
-th{background:#0f62fe;color:#fff}
-th,td{padding:10px;border-bottom:1px solid #e5e7eb}
-.mismatch{background:#fff7ed;border-left:4px solid #f97316;font-weight:800}
+body {
+  font-family:"Segoe UI",Arial,sans-serif;
+  background:#f8fafc;
+  padding:20px;
+}
+h1 {
+  text-align:center;
+  color:#0f62fe;
+  margin: 0 0 10px 0;
+}
+#loading {
+  text-align:center;
+  color:#6b7280;
+  margin-top:10px;
+}
+.summary-bar {
+  text-align:center;
+  font-size:16px;
+  margin-top:10px;
+}
+#next-sync {
+  text-align:center;
+  margin-top:6px;
+  margin-bottom:12px;
+  color:#6b7280;
+}
+
+/* Tabs */
+.tabs {
+  display:flex;
+  justify-content:center;
+  margin:10px 0 15px 0;
+  gap:8px;
+  flex-wrap: wrap;
+}
+.tab-btn {
+  padding:8px 16px;
+  border-radius:999px;
+  border:1px solid #d1d5db;
+  background:#e5e7eb;
+  color:#374151;
+  cursor:pointer;
+  font-size:14px;
+  font-weight:600;
+}
+.tab-btn.active-tab {
+  background:#0f62fe;
+  color:#ffffff;
+  border-color:#0f62fe;
+}
+
+/* Common table style */
+.table-wrap {
+  width:95%;
+  margin:0 auto 20px auto;
+}
+table {
+  width:100%;
+  background:#ffffff;
+  border-radius:8px;
+  border-collapse:collapse;
+  box-shadow:0 2px 6px rgba(0,0,0,0.12);
+  overflow:hidden;
+}
+th,td {
+  padding:10px;
+  border-bottom:1px solid #e5e7eb;
+}
+th {
+  background:#0f62fe;
+  color:#ffffff;
+}
+
+/* Excel button */
+.excel-btn {
+  background:#0d9488;
+  color:#ffffff;
+  padding:8px 14px;
+  border:none;
+  border-radius:6px;
+  cursor:pointer;
+  font-size:14px;
+  font-weight:600;
+  margin:10px auto 15px auto;
+  display:inline-block;
+}
+.excel-btn:hover { background:#0f766e; }
+
+/* Sync button */
+.top-actions {
+  text-align:center;
+  margin: 10px 0 0 0;
+}
+.sync-btn {
+  background:#111827;
+  color:#ffffff;
+  padding:7px 12px;
+  border:none;
+  border-radius:8px;
+  cursor:pointer;
+  font-weight:700;
+  font-size:13px;
+}
+.sync-btn:hover { opacity: .9; }
+.small-note {
+  color:#6b7280;
+  font-size:12px;
+  margin-top:6px;
+}
+
+/* Transferred filter */
+.filter-bar {
+  margin-bottom:10px;
+  font-size:14px;
+  color:#374151;
+}
+.filter-bar select {
+  margin-left:6px;
+  padding:4px 8px;
+  border-radius:6px;
+  border:1px solid #d1d5db;
+  font-size:14px;
+}
+
+/* Mismatch highlight (Worker ID only) */
+.mismatch-wid {
+  background:#fff7ed;
+  border-left:4px solid #f97316;
+  font-weight:800;
+}
+
+/* Transfers gate (hidden after 8th) */
+.transfers-gate {
+  background:#fff;
+  border:1px solid #e5e7eb;
+  border-radius:10px;
+  padding:12px 14px;
+  margin-bottom:12px;
+  box-shadow:0 2px 6px rgba(0,0,0,0.06);
+}
+.gate-title {
+  font-weight:800;
+  margin-bottom:6px;
+  color:#111827;
+}
+.gate-note {
+  color:#6b7280;
+  font-size:13px;
+  line-height:1.35;
+}
+.gate-btn {
+  margin-top:10px;
+  background:#0f62fe;
+  color:#fff;
+  border:none;
+  border-radius:8px;
+  padding:7px 12px;
+  cursor:pointer;
+  font-weight:800;
+}
+.gate-btn:hover { opacity: .95; }
 </style>
 </head>
 
 <body>
 <h1>💰 Daily MTurk Earnings Monitor</h1>
 
-<div style="text-align:center;margin-bottom:10px">
-  <button id="sync">🔄 Sync Now</button>
+<div class="top-actions">
+  <button id="syncNow" class="sync-btn">🔄 Sync Now</button>
+  <div class="small-note">Auto sync happens once per day. Use “Sync Now” only if a transfer happened after today’s sync.</div>
 </div>
 
-<div id="sumQ" style="text-align:center;font-size:16px"></div>
-<div id="sumT" style="text-align:center;font-size:15px;margin-bottom:10px"></div>
+<div id="loading">Loading…</div>
 
-<div style="text-align:center;margin-bottom:10px">
-  <button onclick="tab('q')">Qualified</button>
-  <button onclick="tab('t')">Transferred</button>
+<div class="summary-bar" id="totalQualified"></div>
+<div class="summary-bar" id="totalTransferred"></div>
+<div id="next-sync"></div>
+
+<div style="text-align:center;">
+  <button id="downloadExcel" class="excel-btn">📥 Download Today’s Excel Report</button>
 </div>
 
-<div id="pq">
-<table>
-<thead><tr><th>User</th><th>Worker ID</th><th>Current</th><th>Next</th></tr></thead>
-<tbody id="qbody"></tbody>
-</table>
+<div class="tabs">
+  <button id="tab-qualified" class="tab-btn active-tab">Qualified Users (current ≥ $8)</button>
+  <button id="tab-transferred" class="tab-btn">Transferred (active till next 8th)</button>
 </div>
 
-<div id="pt" style="display:none">
-<table>
-<thead><tr><th>User</th><th>Worker ID</th><th>Transferred</th><th>Date</th></tr></thead>
-<tbody id="tbody"></tbody>
-</table>
+<!-- QUALIFIED PANEL -->
+<div id="panel-qualified" class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>User</th>
+        <th>Worker ID</th>
+        <th>Current Earnings ($)</th>
+        <th>Next Transfer Date</th>
+      </tr>
+    </thead>
+    <tbody id="qualified-body"></tbody>
+  </table>
+</div>
+
+<!-- TRANSFERRED PANEL -->
+<div id="panel-transferred" class="table-wrap" style="display:none;">
+  <!-- After 8th: hidden by default, but clickable to view until month end -->
+  <div id="transfersGate" class="transfers-gate" style="display:none;">
+    <div class="gate-title">Transfers hidden</div>
+    <div id="transfersHiddenNote" class="gate-note"></div>
+    <button id="showTransfersAnywayBtn" class="gate-btn">Show transfers anyway</button>
+  </div>
+
+  <div id="transfersPanelInner">
+    <div class="filter-bar">
+      Filter by Transfer Date:
+      <select id="transferDateFilter">
+        <option value="">All Dates</option>
+      </select>
+    </div>
+
+    <table>
+      <thead>
+        <tr>
+          <th>User</th>
+          <th>Worker ID</th>
+          <th>Transferred Amount ($)</th>
+          <th>Transferred Date</th>
+        </tr>
+      </thead>
+      <tbody id="transferred-body"></tbody>
+    </table>
+  </div>
 </div>
 
 </body>
