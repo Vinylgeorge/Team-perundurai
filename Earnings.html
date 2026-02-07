@@ -1,4 +1,4 @@
-  <!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
@@ -53,9 +53,12 @@ const TEAM_SHEET_CSV =
 const CACHE_KEY      = "earnings_cache_data";
 const SYNC_KEY       = "earnings_last_sync";
 
-// Transfers query cache (once-per-day)
+// Transfers query cache (once-per-day) [new transfer_logs flow]
 const TR_CACHE_KEY   = "transfer_logs_cache_data";
 const TR_SYNC_KEY    = "transfer_logs_last_sync";
+
+// Old transfers cache (your previous localStorage transfers)
+const OLD_TRANSFERS_KEY = "earnings_transfers_cache";
 
 // Excel cache (optional, once-per-day)
 const EXCEL_EARN_KEY  = "excel_daily_earn_rows";
@@ -68,13 +71,9 @@ let TRANSFERRED_DATA = [];
 
 /* ======================================================
    DELETE SESSION PASSWORD (HASHED)
-   - Unlock is for THIS BROWSER TAB SESSION only (sessionStorage)
-   - No Firestore call for unlock. Only deletes make Firestore calls.
 ====================================================== */
 /*
-  ✅ How to generate DELETE_PASS_HASH_HEX:
-
-  Open any browser console and run:
+  Generate DELETE_PASS_HASH_HEX:
   (async () => {
     const SALT = "ab2soft-delete-v1";
     const pw = "YOUR_DELETE_PASSWORD";
@@ -83,8 +82,6 @@ let TRANSFERRED_DATA = [];
     const hex = [...new Uint8Array(hash)].map(b => b.toString(16).padStart(2,"0")).join("");
     console.log(hex);
   })();
-
-  Paste the output below.
 */
 const DELETE_SALT = "ab2soft-delete-v1";
 const DELETE_PASS_HASH_HEX = "PUT_YOUR_SHA256_HASH_HERE";
@@ -156,7 +153,6 @@ function parseAnyDate(dateStr) {
   const s = String(dateStr).trim();
   if (!s) return null;
 
-  // MM/DD/YY or MM/DD/YYYY
   if (s.includes("/")) {
     const p = s.split("/");
     if (p.length === 3) {
@@ -205,7 +201,6 @@ function shouldConsiderMismatch(dateStr) {
 
 /* ======================================================
    WINDOW: 8th-to-8th (for QUERY + DISPLAY)
-   - This window controls what transfers are fetched and shown.
 ====================================================== */
 function getWindow8to8() {
   const now = new Date();
@@ -213,15 +208,13 @@ function getWindow8to8() {
   const m = now.getMonth();
   const day = now.getDate();
 
-  // If today is on/after 8th, window is current month 8 -> next month 8
-  // Else, window is previous month 8 -> current month 8
   let start, endExclusive;
-  if (day >= 10) {
+  if (day >= 8) {
     start = new Date(y, m, 8, 0, 0, 0, 0);
     endExclusive = new Date(y, m + 1, 8, 0, 0, 0, 0);
   } else {
     start = new Date(y, m - 1, 8, 0, 0, 0, 0);
-    endExclusive = new Date(y, m, 10, 0, 0, 0, 0);
+    endExclusive = new Date(y, m, 8, 0, 0, 0, 0);
   }
   return { start, endExclusive };
 }
@@ -235,8 +228,6 @@ function isTransferActive(dateStr) {
 
 /* ======================================================
    UI VISIBILITY RULE
-   - Auto-hide transfers AFTER 8th is crossed (current month)
-   - user can click "Show Transfers" anytime till month end
 ====================================================== */
 function isPast8thThisMonth() {
   const now = new Date();
@@ -244,6 +235,18 @@ function isPast8thThisMonth() {
 }
 function shouldAutoHideTransfers() {
   return isPast8thThisMonth();
+}
+
+/* ======================================================
+   OLD LOCAL TRANSFERS SUPPORT (smart sync)
+====================================================== */
+function loadOldTransfersCache() {
+  return JSON.parse(localStorage.getItem(OLD_TRANSFERS_KEY) || "[]");
+}
+function oldCacheHasCurrentWindowData() {
+  const old = loadOldTransfersCache();
+  if (!Array.isArray(old) || !old.length) return false;
+  return old.some(t => isTransferActive(t.date));
 }
 
 /* ======================================================
@@ -276,7 +279,6 @@ async function loadTeamCSV() {
   const lines = text.split("\n").filter(Boolean);
 
   const teamMap = new Map(); // user -> workerId
-
   for (let i=1;i<lines.length;i++){
     const parts = lines[i].split(",");
     const user = cleanCell(parts[0]);
@@ -304,8 +306,6 @@ function loadCache() {
 
 /* ======================================================
    FIRESTORE FETCH (TRANSFER_LOGS) - ONCE PER DAY
-   ✅ This ensures "ALL transfers should be listed" (nothing missed),
-   because we read per-transfer docs, not only lastTransferDate/Amount.
 ====================================================== */
 async function fetchTransferLogsWindowFromFirestore() {
   const { start, endExclusive } = getWindow8to8();
@@ -356,9 +356,10 @@ function updateCountdown() {
 
 /* ======================================================
    BUILD DATA
-   ✅ Minimal Firestore calls pattern:
-   - earnings_logs: 1 read/day (unless user clicks Sync Now)
-   - transfer_logs window: 1 read/day (unless user clicks Sync Now)
+   ✅ Smart sync:
+   - If OLD localStorage has window transfers → use it (NO Firestore call)
+   - else use new transfer_logs cache if synced today
+   - else fetch transfer_logs from Firestore (1/day)
 ====================================================== */
 async function buildData({ forceSync = false } = {}) {
   const loadingEl    = document.getElementById("loading");
@@ -374,10 +375,56 @@ async function buildData({ forceSync = false } = {}) {
   if (forceSync || needsSync()) docs = await fetchFromFirestore();
   else docs = loadCache();
 
-  // TRANSFERS (Transferred tab) - per-transfer docs in transfer_logs
-  let transferDocs;
-  if (forceSync || needsTransferSync()) transferDocs = await fetchTransferLogsWindowFromFirestore();
-  else transferDocs = loadTransferCache();
+  // TRANSFERS (Transferred tab)
+  let transferDocs = [];
+
+  // Priority 1: Old local cache has current window transfers (skip firestore)
+  if (!forceSync && oldCacheHasCurrentWindowData()) {
+    const old = loadOldTransfersCache();
+
+    transferDocs = old
+      .filter(t => isTransferActive(t.date))
+      .map(t => ({
+        id: `old_${cleanCell(t.workerId)}_${String(t.date)}_${Number(t.amount) || 0}`, // fake id
+        user: cleanCell(t.user || ""),
+        workerId: cleanCell(t.workerId || ""),
+        amount: Number(t.amount) || 0,
+        transferDateStr: String(t.date || ""),
+        lastMonthEarnings: toNum(t.lastMonthEarnings || 0),
+        _fromOldCache: true
+      }));
+
+    // Mark transfer sync as done today (avoid future attempts today)
+    markTransferSynced();
+    // Also set new cache so Excel/export works smoothly
+    localStorage.setItem(TR_CACHE_KEY, JSON.stringify(transferDocs));
+  } else {
+    // Priority 2: new transfer_logs cache if already synced today
+    if (!forceSync && !needsTransferSync()) {
+      transferDocs = loadTransferCache();
+    } else {
+      // Priority 3: fetch from Firestore transfer_logs
+      transferDocs = await fetchTransferLogsWindowFromFirestore();
+    }
+
+    // If still empty, fallback to old cache (display something)
+    if ((!Array.isArray(transferDocs) || transferDocs.length === 0) && !forceSync) {
+      const old = loadOldTransfersCache();
+      if (Array.isArray(old) && old.length) {
+        transferDocs = old
+          .filter(t => isTransferActive(t.date))
+          .map(t => ({
+            id: `old_${cleanCell(t.workerId)}_${String(t.date)}_${Number(t.amount) || 0}`,
+            user: cleanCell(t.user || ""),
+            workerId: cleanCell(t.workerId || ""),
+            amount: Number(t.amount) || 0,
+            transferDateStr: String(t.date || ""),
+            lastMonthEarnings: toNum(t.lastMonthEarnings || 0),
+            _fromOldCache: true
+          }));
+      }
+    }
+  }
 
   // Qualified (current >= 8)
   QUALIFIED_DATA = [];
@@ -397,8 +444,8 @@ async function buildData({ forceSync = false } = {}) {
     }
   }
 
-  // Transferred (ALL transfers in window, nothing missed)
-  TRANSFERRED_DATA = transferDocs
+  // Transferred (ALL transfers in window; supports old cache objects too)
+  TRANSFERRED_DATA = (transferDocs || [])
     .filter(t => {
       const user = cleanCell(t.user || "");
       const wid  = cleanCell(t.workerId || "");
@@ -406,21 +453,22 @@ async function buildData({ forceSync = false } = {}) {
     })
     .map(t => {
       const amt = Number(t.amount) || 0;
-      const dateStr = cleanCell(t.transferDateStr || "");
+      const dateStr = cleanCell(t.transferDateStr || t.date || "");
       const lm = toNum(t.lastMonthEarnings);
 
       const mismatch = (shouldConsiderMismatch(dateStr) && lm > 0 && amt > 0 && !nearlyEqual(lm, amt, 0.01));
 
       return {
-        id: t.id, // needed for delete
+        id: t.id,
         user: cleanCell(t.user || ""),
         wid:  cleanCell(t.workerId || ""),
         amount: amt,
         date: dateStr,
-        mismatch
+        mismatch,
+        _fromOldCache: !!t._fromOldCache || String(t.id || "").startsWith("old_")
       };
     })
-    .filter(t => isTransferActive(t.date)); // safety
+    .filter(t => isTransferActive(t.date));
 
   const sumTransfers = TRANSFERRED_DATA.reduce((acc, x) => acc + (x.amount || 0), 0);
   const finalQualifiedTotal = sumQualifiedCurrent + sumTransfers;
@@ -445,7 +493,6 @@ async function buildData({ forceSync = false } = {}) {
   // invalidate excel caches when data changes
   localStorage.removeItem(EXCEL_EARN_KEY);
   localStorage.removeItem(EXCEL_EARN_DATE);
-  // Note: transferred export cache keys are per day; we can leave them or clear:
   localStorage.removeItem(EXCEL_TR_DATE);
 
   loadingEl.style.display = "none";
@@ -503,7 +550,6 @@ function renderTransferredTable() {
     return display === filterVal;
   });
 
-  // Keep header column count consistent with Action column
   if (data.length === 0) {
     const tr = document.createElement("tr");
     tr.innerHTML = `<td colspan="5" style="text-align:center;color:#6b7280;">No transferred records for this filter.</td>`;
@@ -514,6 +560,8 @@ function renderTransferredTable() {
   const canDelete = isDeleteUnlocked();
 
   for (const r of data) {
+    const isOld = !!r._fromOldCache || String(r.id || "").startsWith("old_");
+
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td>${r.user}</td>
@@ -521,7 +569,7 @@ function renderTransferredTable() {
       <td style="color:#b91c1c;font-weight:bold">${r.amount.toFixed(2)}</td>
       <td>${fmtDate(r.date)}</td>
       <td class="del-col">
-        ${canDelete ? `<button class="del-btn" data-id="${r.id}">🗑 Delete</button>` : ""}
+        ${(!isOld && canDelete) ? `<button class="del-btn" data-id="${r.id}">🗑 Delete</button>` : ""}
       </td>
     `;
     tbody.appendChild(tr);
@@ -543,6 +591,11 @@ document.addEventListener("click", async (e) => {
   const id = btn.getAttribute("data-id");
   if (!id) return;
 
+  if (String(id).startsWith("old_")) {
+    alert("This record is from old local cache, not a Firestore transfer_logs doc. Delete is disabled.");
+    return;
+  }
+
   const ok = confirm(`Delete this transfer record?\n\nDoc ID: ${id}`);
   if (!ok) return;
 
@@ -550,11 +603,11 @@ document.addEventListener("click", async (e) => {
     await deleteDoc(doc(earningsDB, "transfer_logs", id));
 
     // Remove from memory
-    TRANSFERRED_DATA = TRANSFERRED_DATA.filter(x => x.id !== id);
+    TRANSFERRED_DATA = TRANSFERRED_DATA.filter(x => String(x.id) !== String(id));
 
-    // Remove from localStorage cache too (so it won't re-appear today)
+    // Remove from transfer cache too (so it won't re-appear today)
     const cached = loadTransferCache();
-    const updated = cached.filter(x => String(x.id) !== String(id));
+    const updated = (cached || []).filter(x => String(x.id) !== String(id));
     localStorage.setItem(TR_CACHE_KEY, JSON.stringify(updated));
 
     // Re-render
@@ -623,7 +676,7 @@ function switchTab(tab) {
     tPanel.style.display = "block";
     qPanel.style.display = "none";
     applyTransfersVisibilityRule();
-    renderTransferredTable(); // refresh action column state
+    renderTransferredTable();
   }
 }
 
@@ -641,7 +694,6 @@ function ensureXLSX() {
 function buildDailyEarningsRowsFromDocs(docs, teamMap) {
   const rows = [];
 
-  // index docs by workerId and also by user as fallback
   const byWid = new Map();
   const byUser = new Map();
   for (const d of docs) {
@@ -700,13 +752,11 @@ function getFilteredTransferredForExport() {
 async function exportDailyEarningsExcel() {
   if (!ensureXLSX()) return;
 
-  // Use once-per-day cached rows if available
   if (localStorage.getItem(EXCEL_EARN_DATE) === today()) {
     const cached = JSON.parse(localStorage.getItem(EXCEL_EARN_KEY) || "[]");
     if (cached.length) return writeExcel(cached, "Daily Earnings", `Daily_Earnings_AllUsers_${today()}.xlsx`);
   }
 
-  // Do NOT force extra Firestore read here.
   const docs = loadCache();
   if (!docs.length) {
     alert("No cached Firestore earnings data yet. Click 🔄 Sync Now once, then export.");
@@ -725,7 +775,6 @@ async function exportDailyEarningsExcel() {
 async function exportTransferredExcel() {
   if (!ensureXLSX()) return;
 
-  // once-per-day cache for transferred export
   const key = (localStorage.getItem("transferDateFilter_last") || "") + "|" + today();
   const cacheKey = EXCEL_TR_KEY + "::" + key;
 
@@ -912,7 +961,7 @@ body.del-on .del-col { display:table-cell; }
 <div class="top-actions">
   <button id="syncNow" class="sync-btn">🔄 Sync Now</button>
   <div class="small-note">
-    Auto sync happens once per day (earnings + transfer logs). Transfers auto-hide only after 8th; you can still show them anytime till month end.
+    Smart transfers sync: uses localStorage month/window transfers if available (no Firestore call). Otherwise reads transfer_logs once/day.
   </div>
 </div>
 
