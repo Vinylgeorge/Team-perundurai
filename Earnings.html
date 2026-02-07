@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
+<meta charset="UTF-8" />
 <title>💰 MTurk Earnings Monitor (Qualified + Transferred)</title>
 
 <!-- SheetJS for Excel export -->
@@ -9,7 +9,16 @@
 
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-import { initializeFirestore, collection, getDocs } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+import {
+  initializeFirestore,
+  collection,
+  getDocs,
+  query,
+  where,
+  orderBy,
+  doc,
+  deleteDoc
+} from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
 /* ======================================================
    FIREBASE CONFIG
@@ -31,8 +40,6 @@ const earningsDB = initializeFirestore(earningsApp, {
 
 /* ======================================================
    GOOGLE SHEET URLS
-   - Main sheet used for Qualified/Transferred filtering
-   - Team sheet used for "All users" daily excel export
 ====================================================== */
 const MAIN_SHEET_CSV =
   "https://docs.google.com/spreadsheets/d/1mf2-AQ59CuboAWz8Fle3qXTFfAI3cnB7mrkqQF1lyCw/export?format=csv&gid=0";
@@ -45,7 +52,10 @@ const TEAM_SHEET_CSV =
 ====================================================== */
 const CACHE_KEY      = "earnings_cache_data";
 const SYNC_KEY       = "earnings_last_sync";
-const TRANSFERS_KEY  = "earnings_transfers_cache"; // append-only within window
+
+// Transfers query cache (once-per-day)
+const TR_CACHE_KEY   = "transfer_logs_cache_data";
+const TR_SYNC_KEY    = "transfer_logs_last_sync";
 
 // Excel cache (optional, once-per-day)
 const EXCEL_EARN_KEY  = "excel_daily_earn_rows";
@@ -57,16 +67,80 @@ let QUALIFIED_DATA   = [];
 let TRANSFERRED_DATA = [];
 
 /* ======================================================
+   DELETE SESSION PASSWORD (HASHED)
+   - Unlock is for THIS BROWSER TAB SESSION only (sessionStorage)
+   - No Firestore call for unlock. Only deletes make Firestore calls.
+====================================================== */
+/*
+  ✅ How to generate DELETE_PASS_HASH_HEX:
+
+  Open any browser console and run:
+  (async () => {
+    const SALT = "ab2soft-delete-v1";
+    const pw = "YOUR_DELETE_PASSWORD";
+    const enc = new TextEncoder().encode(`${pw}|${SALT}`);
+    const hash = await crypto.subtle.digest("SHA-256", enc);
+    const hex = [...new Uint8Array(hash)].map(b => b.toString(16).padStart(2,"0")).join("");
+    console.log(hex);
+  })();
+
+  Paste the output below.
+*/
+const DELETE_SALT = "ab2soft-delete-v1";
+const DELETE_PASS_HASH_HEX = "PUT_YOUR_SHA256_HASH_HERE";
+const DELETE_SESSION_KEY = "ab2soft_delete_unlocked";
+
+function bufToHex(buffer) {
+  return [...new Uint8Array(buffer)].map(b => b.toString(16).padStart(2, "0")).join("");
+}
+async function sha256Hex(text) {
+  const enc = new TextEncoder().encode(text);
+  const hash = await crypto.subtle.digest("SHA-256", enc);
+  return bufToHex(hash);
+}
+function isDeleteUnlocked() {
+  return sessionStorage.getItem(DELETE_SESSION_KEY) === "1";
+}
+async function unlockDeleteSession() {
+  const pw = prompt("Enter delete password (unlocks delete for this session only):");
+  if (!pw) return false;
+
+  if (DELETE_PASS_HASH_HEX === "PUT_YOUR_SHA256_HASH_HERE") {
+    alert("Set DELETE_PASS_HASH_HEX first (see code comment).");
+    return false;
+  }
+
+  const hex = await sha256Hex(`${pw}|${DELETE_SALT}`);
+  if (hex === DELETE_PASS_HASH_HEX) {
+    sessionStorage.setItem(DELETE_SESSION_KEY, "1");
+    document.body.classList.add("del-on");
+    alert("✅ Delete unlocked for this session.");
+    return true;
+  } else {
+    alert("❌ Wrong password.");
+    return false;
+  }
+}
+function lockDeleteSession() {
+  sessionStorage.removeItem(DELETE_SESSION_KEY);
+  document.body.classList.remove("del-on");
+  alert("🔒 Delete locked.");
+}
+
+/* ======================================================
    HELPERS
 ====================================================== */
 function today() { return new Date().toISOString().slice(0,10); }
 function needsSync() { return localStorage.getItem(SYNC_KEY) !== today(); }
 function markSynced() { localStorage.setItem(SYNC_KEY, today()); }
 
+function needsTransferSync() { return localStorage.getItem(TR_SYNC_KEY) !== today(); }
+function markTransferSynced() { localStorage.setItem(TR_SYNC_KEY, today()); }
+
 function cleanCell(v){
   return String(v ?? "")
     .trim()
-    .replace(/^"+|"+$/g, "")   // strip surrounding quotes
+    .replace(/^"+|"+$/g, "")
     .replace(/\r/g, "");
 }
 
@@ -76,19 +150,13 @@ function toNum(v) {
 }
 function nearlyEqual(a, b, eps = 0.01) { return Math.abs(a - b) <= eps; }
 
-/* Robust date parsing:
-   supports:
-   - "11/17/25"
-   - "11/17/2025"
-   - "Nov 30, 2025"
-   - ISO strings
-*/
+/* Robust date parsing */
 function parseAnyDate(dateStr) {
   if (!dateStr) return null;
   const s = String(dateStr).trim();
   if (!s) return null;
 
-  // 1) MM/DD/YY or MM/DD/YYYY
+  // MM/DD/YY or MM/DD/YYYY
   if (s.includes("/")) {
     const p = s.split("/");
     if (p.length === 3) {
@@ -103,7 +171,6 @@ function parseAnyDate(dateStr) {
     }
   }
 
-  // 2) "Nov 30, 2025" or any Date.parse-able string
   const t = Date.parse(s);
   if (!Number.isNaN(t)) return new Date(t);
 
@@ -137,7 +204,8 @@ function shouldConsiderMismatch(dateStr) {
 }
 
 /* ======================================================
-   TEMP WINDOW: 8th-to-8th (kept in cache)
+   WINDOW: 8th-to-8th (for QUERY + DISPLAY)
+   - This window controls what transfers are fetched and shown.
 ====================================================== */
 function getWindow8to8() {
   const now = new Date();
@@ -145,13 +213,15 @@ function getWindow8to8() {
   const m = now.getMonth();
   const day = now.getDate();
 
+  // If today is on/after 8th, window is current month 8 -> next month 8
+  // Else, window is previous month 8 -> current month 8
   let start, endExclusive;
-  if (day >= 10) {
-    start = new Date(y, m, 1, 0, 0, 0, 0);
-    endExclusive = new Date(y, m + 1, 6, 0, 0, 0, 0);
+  if (day >= 8) {
+    start = new Date(y, m, 8, 0, 0, 0, 0);
+    endExclusive = new Date(y, m + 1, 8, 0, 0, 0, 0);
   } else {
-    start = new Date(y, m - 1, 10, 0, 0, 0, 0);
-    endExclusive = new Date(y, m,10, 0, 0, 0, 0);
+    start = new Date(y, m - 1, 8, 0, 0, 0, 0);
+    endExclusive = new Date(y, m, 8, 0, 0, 0, 0);
   }
   return { start, endExclusive };
 }
@@ -170,73 +240,10 @@ function isTransferActive(dateStr) {
 ====================================================== */
 function isPast8thThisMonth() {
   const now = new Date();
-  return now.getDate() > 10;
+  return now.getDate() > 8;
 }
 function shouldAutoHideTransfers() {
   return isPast8thThisMonth();
-}
-
-/* ======================================================
-   TRANSFERS CACHE (localStorage)
-====================================================== */
-function loadTransfersCache() {
-  return JSON.parse(localStorage.getItem(TRANSFERS_KEY) || "[]");
-}
-function saveTransfersCache(arr) {
-  localStorage.setItem(TRANSFERS_KEY, JSON.stringify(arr));
-}
-
-/*
-  Transferred tab rules:
-  - Show ONLY users from Google Sheet
-  - Cache is append-only inside 8-to-8 window
-  - Highlight workerId for mismatch:
-      lastMonthEarnings != lastTransferAmount
-      ONLY if transfer date is in last month AND date >= 6
-*/
-function refreshTransfersCacheFromDocs(allDocs, users, workers) {
-  // keep only ACTIVE transfers (outside window auto-drops)
-  let cache = loadTransfersCache().filter(t => isTransferActive(t.date));
-
-  for (const d of allDocs) {
-    const user = cleanCell(d.user || "");
-    const wid  = cleanCell(d.workerId || "");
-
-    const inTeam = users.has(user) || workers.has(wid);
-    if (!inTeam) continue;
-
-    const amt = toNum(d.lastTransferAmount);
-    const dt  = d.lastTransferDate || "";
-    if (!dt) continue;
-    if (amt <= 0) continue;
-
-    if (!isTransferActive(dt)) continue;
-
-    const lm = toNum(d.lastMonthEarnings);
-    const mismatch = (shouldConsiderMismatch(dt) && lm > 0 && amt > 0 && !nearlyEqual(lm, amt, 0.01)) ? 1 : 0;
-
-    const exists = cache.some(t =>
-      cleanCell(t.user || "") === user &&
-      cleanCell(t.workerId || "") === wid &&
-      Number(t.amount) === amt &&
-      String(t.date) === String(dt)
-    );
-
-    if (!exists) {
-      cache.push({ user, workerId: wid, amount: amt, date: dt, mismatch });
-    } else {
-      const idx = cache.findIndex(t =>
-        cleanCell(t.user || "") === user &&
-        cleanCell(t.workerId || "") === wid &&
-        Number(t.amount) === amt &&
-        String(t.date) === String(dt)
-      );
-      if (idx >= 0 && mismatch && !cache[idx].mismatch) cache[idx].mismatch = 1;
-    }
-  }
-
-  saveTransfersCache(cache);
-  return cache;
 }
 
 /* ======================================================
@@ -262,7 +269,6 @@ async function loadMainCSV() {
 
 /* ======================================================
    TEAM CSV (for "Daily Earnings Excel" export)
-   Column A → user, Column B → workerId
 ====================================================== */
 async function loadTeamCSV() {
   const res = await fetch(TEAM_SHEET_CSV);
@@ -281,7 +287,7 @@ async function loadTeamCSV() {
 }
 
 /* ======================================================
-   FIRESTORE FETCH (ONCE PER DAY)
+   FIRESTORE FETCH (EARNINGS_LOGS) - ONCE PER DAY
 ====================================================== */
 async function fetchFromFirestore() {
   const snap = await getDocs(collection(earningsDB, "earnings_logs"));
@@ -294,6 +300,33 @@ async function fetchFromFirestore() {
 }
 function loadCache() {
   return JSON.parse(localStorage.getItem(CACHE_KEY) || "[]");
+}
+
+/* ======================================================
+   FIRESTORE FETCH (TRANSFER_LOGS) - ONCE PER DAY
+   ✅ This ensures "ALL transfers should be listed" (nothing missed),
+   because we read per-transfer docs, not only lastTransferDate/Amount.
+====================================================== */
+async function fetchTransferLogsWindowFromFirestore() {
+  const { start, endExclusive } = getWindow8to8();
+
+  const qy = query(
+    collection(earningsDB, "transfer_logs"),
+    where("transferDateTS", ">=", start),
+    where("transferDateTS", "<", endExclusive),
+    orderBy("transferDateTS", "desc")
+  );
+
+  const snap = await getDocs(qy);
+  const arr = [];
+  snap.forEach(d => arr.push({ id: d.id, ...d.data() }));
+
+  localStorage.setItem(TR_CACHE_KEY, JSON.stringify(arr));
+  markTransferSynced();
+  return arr;
+}
+function loadTransferCache() {
+  return JSON.parse(localStorage.getItem(TR_CACHE_KEY) || "[]");
 }
 
 /* ======================================================
@@ -323,6 +356,9 @@ function updateCountdown() {
 
 /* ======================================================
    BUILD DATA
+   ✅ Minimal Firestore calls pattern:
+   - earnings_logs: 1 read/day (unless user clicks Sync Now)
+   - transfer_logs window: 1 read/day (unless user clicks Sync Now)
 ====================================================== */
 async function buildData({ forceSync = false } = {}) {
   const loadingEl    = document.getElementById("loading");
@@ -333,11 +369,15 @@ async function buildData({ forceSync = false } = {}) {
 
   const { users, workers } = await loadMainCSV();
 
+  // EARNINGS (Qualified tab)
   let docs;
   if (forceSync || needsSync()) docs = await fetchFromFirestore();
   else docs = loadCache();
 
-  const transfersCache = refreshTransfersCacheFromDocs(docs, users, workers);
+  // TRANSFERS (Transferred tab) - per-transfer docs in transfer_logs
+  let transferDocs;
+  if (forceSync || needsTransferSync()) transferDocs = await fetchTransferLogsWindowFromFirestore();
+  else transferDocs = loadTransferCache();
 
   // Qualified (current >= 8)
   QUALIFIED_DATA = [];
@@ -357,17 +397,30 @@ async function buildData({ forceSync = false } = {}) {
     }
   }
 
-  // Transferred (data exists always, UI may hide)
-  TRANSFERRED_DATA = transfersCache
-    .filter(t => users.has(cleanCell(t.user || "")) || workers.has(cleanCell(t.workerId || "")))
-    .filter(t => isTransferActive(t.date))
-    .map(t => ({
-      user: cleanCell(t.user || ""),
-      wid:  cleanCell(t.workerId || ""),
-      amount: Number(t.amount) || 0,
-      date: t.date,
-      mismatch: !!t.mismatch
-    }));
+  // Transferred (ALL transfers in window, nothing missed)
+  TRANSFERRED_DATA = transferDocs
+    .filter(t => {
+      const user = cleanCell(t.user || "");
+      const wid  = cleanCell(t.workerId || "");
+      return users.has(user) || workers.has(wid);
+    })
+    .map(t => {
+      const amt = Number(t.amount) || 0;
+      const dateStr = cleanCell(t.transferDateStr || "");
+      const lm = toNum(t.lastMonthEarnings);
+
+      const mismatch = (shouldConsiderMismatch(dateStr) && lm > 0 && amt > 0 && !nearlyEqual(lm, amt, 0.01));
+
+      return {
+        id: t.id, // needed for delete
+        user: cleanCell(t.user || ""),
+        wid:  cleanCell(t.workerId || ""),
+        amount: amt,
+        date: dateStr,
+        mismatch
+      };
+    })
+    .filter(t => isTransferActive(t.date)); // safety
 
   const sumTransfers = TRANSFERRED_DATA.reduce((acc, x) => acc + (x.amount || 0), 0);
   const finalQualifiedTotal = sumQualifiedCurrent + sumTransfers;
@@ -387,13 +440,12 @@ async function buildData({ forceSync = false } = {}) {
 
   renderQualifiedTable();
   initTransferredFilterAndTable();
-
   applyTransfersVisibilityRule();
 
   // invalidate excel caches when data changes
   localStorage.removeItem(EXCEL_EARN_KEY);
   localStorage.removeItem(EXCEL_EARN_DATE);
-  localStorage.removeItem(EXCEL_TR_KEY);
+  // Note: transferred export cache keys are per day; we can leave them or clear:
   localStorage.removeItem(EXCEL_TR_DATE);
 
   loadingEl.style.display = "none";
@@ -451,12 +503,15 @@ function renderTransferredTable() {
     return display === filterVal;
   });
 
+  // Keep header column count consistent with Action column
   if (data.length === 0) {
     const tr = document.createElement("tr");
-    tr.innerHTML = `<td colspan="4" style="text-align:center;color:#6b7280;">No transferred records for this filter.</td>`;
+    tr.innerHTML = `<td colspan="5" style="text-align:center;color:#6b7280;">No transferred records for this filter.</td>`;
     tbody.appendChild(tr);
     return;
   }
+
+  const canDelete = isDeleteUnlocked();
 
   for (const r of data) {
     const tr = document.createElement("tr");
@@ -465,10 +520,51 @@ function renderTransferredTable() {
       <td class="${r.mismatch ? "mismatch-wid" : ""}">${r.wid}</td>
       <td style="color:#b91c1c;font-weight:bold">${r.amount.toFixed(2)}</td>
       <td>${fmtDate(r.date)}</td>
+      <td class="del-col">
+        ${canDelete ? `<button class="del-btn" data-id="${r.id}">🗑 Delete</button>` : ""}
+      </td>
     `;
     tbody.appendChild(tr);
   }
 }
+
+/* ======================================================
+   DELETE HANDLER (1 Firestore call per delete)
+====================================================== */
+document.addEventListener("click", async (e) => {
+  const btn = e.target.closest(".del-btn");
+  if (!btn) return;
+
+  if (!isDeleteUnlocked()) {
+    alert("Unlock delete first.");
+    return;
+  }
+
+  const id = btn.getAttribute("data-id");
+  if (!id) return;
+
+  const ok = confirm(`Delete this transfer record?\n\nDoc ID: ${id}`);
+  if (!ok) return;
+
+  try {
+    await deleteDoc(doc(earningsDB, "transfer_logs", id));
+
+    // Remove from memory
+    TRANSFERRED_DATA = TRANSFERRED_DATA.filter(x => x.id !== id);
+
+    // Remove from localStorage cache too (so it won't re-appear today)
+    const cached = loadTransferCache();
+    const updated = cached.filter(x => String(x.id) !== String(id));
+    localStorage.setItem(TR_CACHE_KEY, JSON.stringify(updated));
+
+    // Re-render
+    initTransferredFilterAndTable();
+    alert("✅ Deleted.");
+  } catch (err) {
+    console.error(err);
+    alert("❌ Delete failed. Check Firestore rules / permissions.");
+  }
+});
 
 /* ======================================================
    TRANSFERS VISIBILITY
@@ -527,13 +623,12 @@ function switchTab(tab) {
     tPanel.style.display = "block";
     qPanel.style.display = "none";
     applyTransfersVisibilityRule();
+    renderTransferredTable(); // refresh action column state
   }
 }
 
 /* ======================================================
    EXCEL EXPORTS
-   1) Daily Earnings Excel (ALL USERS from TEAM_SHEET_CSV)
-   2) Transferred Excel (based on current transferred filter)
 ====================================================== */
 function ensureXLSX() {
   if (!window.XLSX) {
@@ -614,7 +709,7 @@ async function exportDailyEarningsExcel() {
   // Do NOT force extra Firestore read here.
   const docs = loadCache();
   if (!docs.length) {
-    alert("No cached Firestore data yet. Click 🔄 Sync Now once, then export.");
+    alert("No cached Firestore earnings data yet. Click 🔄 Sync Now once, then export.");
     return;
   }
 
@@ -663,25 +758,37 @@ window.addEventListener("DOMContentLoaded", () => {
   updateCountdown();
   setInterval(updateCountdown, 60000);
 
+  if (isDeleteUnlocked()) document.body.classList.add("del-on");
+
   document.getElementById("tab-qualified").onclick   = () => switchTab("qualified");
   document.getElementById("tab-transferred").onclick = () => switchTab("transferred");
 
+  // Sync Now: forces BOTH earnings + transfer logs refresh
   document.getElementById("syncNow").onclick = () => buildData({ forceSync: true });
+
   document.getElementById("toggleTransfers").onclick = toggleTransfersVisibility;
 
   document.getElementById("downloadDailyExcel").onclick = exportDailyEarningsExcel;
   document.getElementById("downloadTransfersExcel").onclick = () => {
-    // remember last filter selection for cache key stability
     const f = document.getElementById("transferDateFilter")?.value || "";
     localStorage.setItem("transferDateFilter_last", f);
     exportTransferredExcel();
   };
 
-  // when filter changes, update cache key context
   document.getElementById("transferDateFilter").addEventListener("change", () => {
     const f = document.getElementById("transferDateFilter")?.value || "";
     localStorage.setItem("transferDateFilter_last", f);
   });
+
+  // Delete unlock/lock (session only)
+  document.getElementById("unlockDelete").onclick = async () => {
+    await unlockDeleteSession();
+    renderTransferredTable();
+  };
+  document.getElementById("lockDelete").onclick = () => {
+    lockDeleteSession();
+    renderTransferredTable();
+  };
 
   switchTab("qualified");
   buildData();
@@ -776,10 +883,26 @@ th { background:#0f62fe; color:#fff; }
 }
 .excel-btn:hover{ background:#0f766e; }
 
-/* Soft hide (keeps tab clickable, just collapses) */
+/* Soft hide */
 .soft-hidden{
   display:none !important;
 }
+
+/* Delete column hidden unless delete is unlocked */
+.del-col { display:none; }
+body.del-on .del-col { display:table-cell; }
+
+.del-btn{
+  background:#991b1b;
+  color:#fff;
+  border:none;
+  border-radius:8px;
+  padding:6px 10px;
+  cursor:pointer;
+  font-weight:800;
+  font-size:12px;
+}
+.del-btn:hover{ opacity:.9; }
 </style>
 </head>
 
@@ -788,7 +911,9 @@ th { background:#0f62fe; color:#fff; }
 
 <div class="top-actions">
   <button id="syncNow" class="sync-btn">🔄 Sync Now</button>
-  <div class="small-note">Auto sync happens once per day. Transfers auto-hide only after 8th; you can still show them anytime till month end.</div>
+  <div class="small-note">
+    Auto sync happens once per day (earnings + transfer logs). Transfers auto-hide only after 8th; you can still show them anytime till month end.
+  </div>
 </div>
 
 <div id="loading">Loading…</div>
@@ -828,6 +953,11 @@ th { background:#0f62fe; color:#fff; }
 
   <div class="transfer-tools">
     <button id="toggleTransfers" class="toggle-btn">🙈 Hide Transfers</button>
+
+    <!-- Delete controls -->
+    <button id="unlockDelete" class="toggle-btn">🔐 Unlock Delete</button>
+    <button id="lockDelete" class="toggle-btn">🔒 Lock</button>
+
     <div id="transferHint" class="hint"></div>
   </div>
 
@@ -847,6 +977,7 @@ th { background:#0f62fe; color:#fff; }
           <th>Worker ID</th>
           <th>Transferred Amount ($)</th>
           <th>Transferred Date</th>
+          <th class="del-col">Action</th>
         </tr>
       </thead>
       <tbody id="transferred-body"></tbody>
