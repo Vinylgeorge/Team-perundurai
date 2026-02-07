@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+  <!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
@@ -216,7 +216,7 @@ function getWindow8to8() {
   // If today is on/after 8th, window is current month 8 -> next month 8
   // Else, window is previous month 8 -> current month 8
   let start, endExclusive;
-  if (day >= 8) {
+  if (day >= 10) {
     start = new Date(y, m, 8, 0, 0, 0, 0);
     endExclusive = new Date(y, m + 1, 8, 0, 0, 0, 0);
   } else {
