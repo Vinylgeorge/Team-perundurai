@@ -1,9 +1,9 @@
 // ==UserScript==
-// @name        MTurk Task → Firestore + User Mapping (Only Today+Yesterday)
+// @name        MTurk Tasks
 // @namespace   Violentmonkey Scripts
 // @match       https://worker.mturk.com/projects/*/tasks/*
 // @grant       none
-// @version     1.2
+// @version     1.3
 // @updateURL    https://github.com/Vinylgeorge/Team-perundurai/raw/refs/heads/main/hit-monitor.user.js
 // @downloadURL  https://github.com/Vinylgeorge/Team-perundurai/raw/refs/heads/main/hit-monitor.user.js
 // ==/UserScript==
@@ -55,7 +55,7 @@
           return;
         }
 
-        for (let i = 1; i < lines.length; i++) {
+         for (let i = 1; i < lines.length; i++) {
           const parts = lines[i].split(sep).map(v => v.trim());
           const wid = parts[widIdx]?.replace(/^\\uFEFF/, "").trim();
           const usr = parts[userIdx]?.trim();
