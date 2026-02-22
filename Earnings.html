@@ -320,6 +320,7 @@ async function fetchTransferLogsWindowFromFirestore() {
   );
 
   const snap = await getDocs(qy);
+  console.log("[TRANSFER] snap.size =", snap.size);
   const arr = [];
   snap.forEach(d => arr.push({ id: d.id, ...d.data() }));
 
