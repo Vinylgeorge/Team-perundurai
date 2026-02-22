@@ -468,7 +468,8 @@ async function buildData({ forceSync = false } = {}) {
         _fromOldCache: !!t._fromOldCache || String(t.id || "").startsWith("old_")
       };
     })
-    .filter(t => isTransferActive(t.date));
+    // DEBUG MODE
+  .filter(t => true);
 
   const sumTransfers = TRANSFERRED_DATA.reduce((acc, x) => acc + (x.amount || 0), 0);
   const finalQualifiedTotal = sumQualifiedCurrent + sumTransfers;
