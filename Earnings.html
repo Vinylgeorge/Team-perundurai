@@ -1,1041 +1,193 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8" />
+<meta charset="UTF-8">
 <title>💰 MTurk Earnings Monitor (Qualified + Transferred)</title>
 
-<!-- SheetJS for Excel export -->
 <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
 
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
-import {
-  initializeFirestore,
-  collection,
-  getDocs,
-  query,
-  where,
-  orderBy,
-  doc,
-  deleteDoc
-} from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+import { initializeFirestore, collection, getDocs } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
-/* ======================================================
-   FIREBASE CONFIG
-====================================================== */
-const earningsConfig = {
+/* ================= FIREBASE ================= */
+const earningsApp = initializeApp({
   apiKey: "AIzaSyBTFpM3fs7kWBrZL4yOi9tquUTp1HhH7L8",
   authDomain: "mturk-monitordeep.firebaseapp.com",
   projectId: "mturk-monitordeep",
   storageBucket: "mturk-monitordeep.firebasestorage.app",
   messagingSenderId: "505786000194",
   appId: "1:505786000194:web:40b9c9df75d3125f3a99cd"
-};
+}, "earningsApp");
 
-const earningsApp = initializeApp(earningsConfig, "earningsApp");
-const earningsDB = initializeFirestore(earningsApp, {
+const db = initializeFirestore(earningsApp, {
   experimentalForceLongPolling: true,
   useFetchStreams: false
 });
 
-/* ======================================================
-   GOOGLE SHEET URLS
-====================================================== */
-const MAIN_SHEET_CSV =
-  "https://docs.google.com/spreadsheets/d/1mf2-AQ59CuboAWz8Fle3qXTFfAI3cnB7mrkqQF1lyCw/export?format=csv&gid=0";
+/* ================= STORAGE ================= */
+const CACHE_KEY = "earnings_cache_data";
+const SYNC_KEY  = "earnings_last_sync";
+const TRANSFERS_KEY = "earnings_transfers_cache";
 
-const TEAM_SHEET_CSV =
-  "https://docs.google.com/spreadsheets/d/1mf2-AQ59CuboAWz8Fle3qXTFfAI3cnB7mrkqQF1lyCw/export?format=csv&gid=0";
+/* ================= HELPERS ================= */
+const today = () => new Date().toISOString().slice(0,10);
+const needsSync = () => localStorage.getItem(SYNC_KEY) !== today();
+const markSynced = () => localStorage.setItem(SYNC_KEY, today());
 
-/* ======================================================
-   STORAGE KEYS + STATE
-====================================================== */
-const CACHE_KEY      = "earnings_cache_data";
-const SYNC_KEY       = "earnings_last_sync";
-
-// Transfers query cache (once-per-day) [new transfer_logs flow]
-const TR_CACHE_KEY   = "transfer_logs_cache_data";
-const TR_SYNC_KEY    = "transfer_logs_last_sync";
-
-// Old transfers cache (your previous localStorage transfers)
-const OLD_TRANSFERS_KEY = "earnings_transfers_cache";
-
-// Excel cache (optional, once-per-day)
-const EXCEL_EARN_KEY  = "excel_daily_earn_rows";
-const EXCEL_EARN_DATE = "excel_daily_earn_date";
-const EXCEL_TR_KEY    = "excel_transfers_rows";
-const EXCEL_TR_DATE   = "excel_transfers_date";
-
-let QUALIFIED_DATA   = [];
-let TRANSFERRED_DATA = [];
-  window._QUALIFIED_DATA = () => QUALIFIED_DATA;
-window._TRANSFERRED_DATA = () => TRANSFERRED_DATA;
-
-/* ======================================================
-   DELETE SESSION PASSWORD (HASHED)
-====================================================== */
-/*
-  Generate DELETE_PASS_HASH_HEX:
-  (async () => {
-    const SALT = "ab2soft-delete-v1";
-    const pw = "YOUR_DELETE_PASSWORD";
-    const enc = new TextEncoder().encode(`${pw}|${SALT}`);
-    const hash = await crypto.subtle.digest("SHA-256", enc);
-    const hex = [...new Uint8Array(hash)].map(b => b.toString(16).padStart(2,"0")).join("");
-    console.log(hex);
-  })();
-*/
-const DELETE_SALT = "ab2soft-delete-v1";
-const DELETE_PASS_HASH_HEX = "830443654661e155607b1c130e6238b307e92331f81cf27d9535b4399537e704";
-const DELETE_SESSION_KEY = "ab2soft_delete_unlocked";
-
-function bufToHex(buffer) {
-  return [...new Uint8Array(buffer)].map(b => b.toString(16).padStart(2, "0")).join("");
+function parseDate(v){
+  if(!v) return null;
+  const d = new Date(v.includes("/") ? v.replace(/(\d+)\/(\d+)\/(\d+)/,"$3-$1-$2") : v);
+  return isNaN(d) ? null : d;
 }
-async function sha256Hex(text) {
-  const enc = new TextEncoder().encode(text);
-  const hash = await crypto.subtle.digest("SHA-256", enc);
-  return bufToHex(hash);
+function isAfter5th(v){
+  const d = parseDate(v); return d && d.getDate() > 5;
 }
-function isDeleteUnlocked() {
-  return sessionStorage.getItem(DELETE_SESSION_KEY) === "1";
+function activeUntilNext6th(v){
+  const d = parseDate(v);
+  if(!d) return false;
+  const cutoff = new Date(d.getFullYear(), d.getMonth()+1, 6);
+  return new Date() < cutoff;
 }
-async function unlockDeleteSession() {
-  const pw = prompt("Enter delete password (unlocks delete for this session only):");
-  if (!pw) return false;
+const fmt = v => parseDate(v)?.toLocaleDateString() || v || "—";
 
-  if (DELETE_PASS_HASH_HEX === "PUT_YOUR_SHA256_HASH_HERE") {
-    alert("Set DELETE_PASS_HASH_HEX first (see code comment).");
-    return false;
-  }
-
-  const hex = await sha256Hex(`${pw}|${DELETE_SALT}`);
-  if (hex === DELETE_PASS_HASH_HEX) {
-    sessionStorage.setItem(DELETE_SESSION_KEY, "1");
-    document.body.classList.add("del-on");
-    alert("✅ Delete unlocked for this session.");
-    return true;
-  } else {
-    alert("❌ Wrong password.");
-    return false;
-  }
-}
-function lockDeleteSession() {
-  sessionStorage.removeItem(DELETE_SESSION_KEY);
-  document.body.classList.remove("del-on");
-  alert("🔒 Delete locked.");
+/* ================= TEAM CSV ================= */
+async function loadTeam(){
+  const res = await fetch("https://docs.google.com/spreadsheets/d/1mf2-AQ59CuboAWz8Fle3qXTFfAI3cnB7mrkqQF1lyCw/export?format=csv&gid=0");
+  const rows = (await res.text()).split("\n").slice(1);
+  const users=new Set(), workers=new Set();
+  rows.forEach(r=>{
+    const [u,w]=r.split(",");
+    if(u) users.add(u.trim());
+    if(w) workers.add(w.trim());
+  });
+  return {users,workers};
 }
 
-/* ======================================================
-   HELPERS
-====================================================== */
-function today() { return new Date().toISOString().slice(0,10); }
-function needsSync() { return localStorage.getItem(SYNC_KEY) !== today(); }
-function markSynced() { localStorage.setItem(SYNC_KEY, today()); }
-
-function needsTransferSync() { return localStorage.getItem(TR_SYNC_KEY) !== today(); }
-function markTransferSynced() { localStorage.setItem(TR_SYNC_KEY, today()); }
-
-function cleanCell(v){
-  return String(v ?? "")
-    .trim()
-    .replace(/^"+|"+$/g, "")
-    .replace(/\r/g, "");
-}
-
-function toNum(v) {
-  const n = parseFloat(String(v ?? "").replace(/[^\d.\-]/g, ""));
-  return Number.isFinite(n) ? n : 0;
-}
-function nearlyEqual(a, b, eps = 0.01) { return Math.abs(a - b) <= eps; }
-
-/* Robust date parsing */
-function parseAnyDate(dateStr) {
-  if (!dateStr) return null;
-  const s = String(dateStr).trim();
-  if (!s) return null;
-
-  if (s.includes("/")) {
-    const p = s.split("/");
-    if (p.length === 3) {
-      const m = parseInt(p[0], 10);
-      const d = parseInt(p[1], 10);
-      let y = parseInt(p[2], 10);
-      if (Number.isNaN(m) || Number.isNaN(d) || Number.isNaN(y)) return null;
-      if (y < 100) y = 2000 + y;
-      const dt = new Date(y, m - 1, d);
-      if (Number.isNaN(dt.getTime())) return null;
-      return dt;
-    }
-  }
-
-  const t = Date.parse(s);
-  if (!Number.isNaN(t)) return new Date(t);
-
-  return null;
-}
-
-function fmtDate(dateStr) {
-  const dt = parseAnyDate(dateStr);
-  if (!dt) return (dateStr || "—");
-  return dt.toLocaleDateString();
-}
-
-function isPrevMonth(dateStr) {
-  const dt = parseAnyDate(dateStr);
-  if (!dt) return false;
-  const now = new Date();
-  const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-  return dt.getFullYear() === prev.getFullYear() && dt.getMonth() === prev.getMonth();
-}
-
-/*
-  ✅ Mismatch highlight rule:
-  - ONLY consider transfers that happened in LAST MONTH
-  - AND only dates from 6th to last day (ignore 1st–5th)
-*/
-function shouldConsiderMismatch(dateStr) {
-  const dt = parseAnyDate(dateStr);
-  if (!dt) return false;
-  if (!isPrevMonth(dateStr)) return false;
-  return dt.getDate() >= 6;
-}
-
-/* ======================================================
-   WINDOW: 8th-to-8th (for QUERY + DISPLAY)
-====================================================== */
-function getWindow8to8() {
-  const now = new Date();
-  const y = now.getFullYear();
-  const m = now.getMonth();
-  const day = now.getDate();
-
-  let start, endExclusive;
-  if (day >= 10) {
-    start = new Date(y, m, 8, 0, 0, 0, 0);
-    endExclusive = new Date(y, m + 1, 8, 0, 0, 0, 0);
-  } else {
-    start = new Date(y, m - 1, 8, 0, 0, 0, 0);
-    endExclusive = new Date(y, m, 8, 0, 0, 0, 0);
-  }
-  return { start, endExclusive };
-}
-
-function isTransferActive(dateStr) {
-  const dt = parseAnyDate(dateStr);
-  if (!dt) return false;
-  const { start, endExclusive } = getWindow8to8();
-  return dt >= start && dt < endExclusive;
-}
-
-/* ======================================================
-   UI VISIBILITY RULE
-====================================================== */
-function isPast8thThisMonth() {
-  const now = new Date();
-  return now.getDate() > 8;
-}
-function shouldAutoHideTransfers() {
-  return isPast8thThisMonth();
-}
-
-/* ======================================================
-   OLD LOCAL TRANSFERS SUPPORT (smart sync)
-====================================================== */
-function loadOldTransfersCache() {
-  return JSON.parse(localStorage.getItem(OLD_TRANSFERS_KEY) || "[]");
-}
-function oldCacheHasCurrentWindowData() {
-  const old = loadOldTransfersCache();
-  if (!Array.isArray(old) || !old.length) return false;
-  return old.some(t => isTransferActive(t.date));
-}
-
-/* ======================================================
-   GOOGLE SHEET (main team list: used for filter)
-====================================================== */
-async function loadMainCSV() {
-  const res = await fetch(MAIN_SHEET_CSV);
-  const text  = await res.text();
-  const lines = text.split("\n").filter(Boolean);
-
-  const users   = new Set();
-  const workers = new Set();
-
-  for (let i=1;i<lines.length;i++){
-    const parts = lines[i].split(",");
-    const u = cleanCell(parts[0]);
-    const w = cleanCell(parts[1]);
-    if (u) users.add(u);
-    if (w) workers.add(w);
-  }
-  return { users, workers };
-}
-
-/* ======================================================
-   TEAM CSV (for "Daily Earnings Excel" export)
-====================================================== */
-async function loadTeamCSV() {
-  const res = await fetch(TEAM_SHEET_CSV);
-  const text  = await res.text();
-  const lines = text.split("\n").filter(Boolean);
-
-  const teamMap = new Map(); // user -> workerId
-  for (let i=1;i<lines.length;i++){
-    const parts = lines[i].split(",");
-    const user = cleanCell(parts[0]);
-    const wid  = cleanCell(parts[1]);
-    if (user && wid) teamMap.set(user, wid);
-  }
-  return teamMap;
-}
-
-/* ======================================================
-   FIRESTORE FETCH (EARNINGS_LOGS) - ONCE PER DAY
-====================================================== */
-async function fetchFromFirestore() {
-  const snap = await getDocs(collection(earningsDB, "earnings_logs"));
-  const arr  = [];
-  snap.forEach(d => arr.push({ id: d.id, ...d.data() }));
-
-  localStorage.setItem(CACHE_KEY, JSON.stringify(arr));
+/* ================= FIRESTORE ================= */
+async function fetchFS(){
+  const snap = await getDocs(collection(db,"earnings_logs"));
+  const arr=[];
+  snap.forEach(d=>arr.push({id:d.id,...d.data()}));
+  localStorage.setItem(CACHE_KEY,JSON.stringify(arr));
   markSynced();
   return arr;
 }
-function loadCache() {
-  return JSON.parse(localStorage.getItem(CACHE_KEY) || "[]");
-}
+const loadFS = ()=>JSON.parse(localStorage.getItem(CACHE_KEY)||"[]");
 
-/* ======================================================
-   FIRESTORE FETCH (TRANSFER_LOGS) - ONCE PER DAY
-====================================================== */
-async function fetchTransferLogsWindowFromFirestore() {
-  const { start, endExclusive } = getWindow8to8();
+/* ================= TRANSFER CACHE ================= */
+const loadTransfers=()=>JSON.parse(localStorage.getItem(TRANSFERS_KEY)||"[]");
+const saveTransfers=a=>localStorage.setItem(TRANSFERS_KEY,JSON.stringify(a));
 
-  const qy = query(
-    collection(earningsDB, "transfer_logs"),
-    where("transferDateTS", ">=", start),
-    where("transferDateTS", "<", endExclusive),
-    orderBy("transferDateTS", "desc")
-  );
+function refreshTransfers(docs,users,workers){
+  let cache = loadTransfers().filter(t=>activeUntilNext6th(t.date));
 
-  const snap = await getDocs(qy);
-  console.log("[TRANSFER] snap.size =", snap.size);
-  const arr = [];
-  snap.forEach(d => arr.push({ id: d.id, ...d.data() }));
+  for(const d of docs){
+    const user=(d.user||"").trim();
+    const wid=(d.workerId||d.id||"").trim();
+    if(!users.has(user)&&!workers.has(wid)) continue;
 
-  localStorage.setItem(TR_CACHE_KEY, JSON.stringify(arr));
-  markTransferSynced();
-  return arr;
-}
-function loadTransferCache() {
-  return JSON.parse(localStorage.getItem(TR_CACHE_KEY) || "[]");
-}
+    const amt=+d.lastTransferAmount||0;
+    const dt=d.lastTransferDate;
+    if(amt<8||!dt||!isAfter5th(dt)||!activeUntilNext6th(dt)) continue;
 
-/* ======================================================
-   COUNTDOWN + WINDOW DISPLAY
-====================================================== */
-function updateCountdown() {
-  const el = document.getElementById("next-sync");
-  if (!el) return;
-
-  const now  = new Date();
-  const next = new Date();
-  next.setHours(24,0,0,0);
-
-  const diff = next - now;
-  const h = Math.floor(diff / (1000*60*60));
-  const m = Math.floor((diff / (1000*60)) % 60);
-
-  const { start, endExclusive } = getWindow8to8();
-  const winTxt = `${start.toLocaleDateString()} → ${new Date(endExclusive - 1).toLocaleDateString()}`;
-
-  const hideTxt = shouldAutoHideTransfers()
-    ? "Transfers auto-hidden (after 8th). Click “Show Transfers” anytime."
-    : "Transfers visible (till 8th).";
-
-  el.innerHTML = `Next Auto Sync: <b>12:00 AM</b> (in ${h}h ${m}m) • Transfer Window: <b>${winTxt}</b> • ${hideTxt}`;
-}
-
-/* ======================================================
-   BUILD DATA
-   ✅ Smart sync:
-   - If OLD localStorage has window transfers → use it (NO Firestore call)
-   - else use new transfer_logs cache if synced today
-   - else fetch transfer_logs from Firestore (1/day)
-====================================================== */
-async function buildData({ forceSync = false } = {}) {
-  const loadingEl    = document.getElementById("loading");
-  const totalQEl     = document.getElementById("totalQualified");
-  const totalTransEl = document.getElementById("totalTransferred");
-
-  loadingEl.style.display = "block";
-
-  const { users, workers } = await loadMainCSV();
-
-  // EARNINGS (Qualified tab)
-  let docs;
-  if (forceSync || needsSync()) docs = await fetchFromFirestore();
-  else docs = loadCache();
-
-  // TRANSFERS (Transferred tab)
-  let transferDocs = [];
-
-  // Priority 1: Old local cache has current window transfers (skip firestore)
-  if (!forceSync && oldCacheHasCurrentWindowData()) {
-    const old = loadOldTransfersCache();
-
-    transferDocs = old
-      .filter(t => isTransferActive(t.date))
-      .map(t => ({
-        id: `old_${cleanCell(t.workerId)}_${String(t.date)}_${Number(t.amount) || 0}`, // fake id
-        user: cleanCell(t.user || ""),
-        workerId: cleanCell(t.workerId || ""),
-        amount: Number(t.amount) || 0,
-        transferDateStr: String(t.date || ""),
-        lastMonthEarnings: toNum(t.lastMonthEarnings || 0),
-        _fromOldCache: true
-      }));
-
-    // Mark transfer sync as done today (avoid future attempts today)
-    markTransferSynced();
-    // Also set new cache so Excel/export works smoothly
-    localStorage.setItem(TR_CACHE_KEY, JSON.stringify(transferDocs));
-  } else {
-    // Priority 2: new transfer_logs cache if already synced today
-    if (!forceSync && !needsTransferSync()) {
-      transferDocs = loadTransferCache();
-    } else {
-      // Priority 3: fetch from Firestore transfer_logs
-      transferDocs = await fetchTransferLogsWindowFromFirestore();
-    }
-
-    // If still empty, fallback to old cache (display something)
-    if ((!Array.isArray(transferDocs) || transferDocs.length === 0) && !forceSync) {
-      const old = loadOldTransfersCache();
-      if (Array.isArray(old) && old.length) {
-        transferDocs = old
-          .filter(t => isTransferActive(t.date))
-          .map(t => ({
-            id: `old_${cleanCell(t.workerId)}_${String(t.date)}_${Number(t.amount) || 0}`,
-            user: cleanCell(t.user || ""),
-            workerId: cleanCell(t.workerId || ""),
-            amount: Number(t.amount) || 0,
-            transferDateStr: String(t.date || ""),
-            lastMonthEarnings: toNum(t.lastMonthEarnings || 0),
-            _fromOldCache: true
-          }));
-      }
+    if(!cache.some(x=>x.user===user&&x.workerId===wid&&x.amount===amt&&x.date===dt)){
+      cache.push({user,workerId:wid,amount:amt,date:dt});
     }
   }
+  saveTransfers(cache);
+  return cache;
+}
 
-  // Qualified (current >= 8)
-  QUALIFIED_DATA = [];
-  let sumQualifiedCurrent = 0;
+/* ================= BUILD ================= */
+async function build(){
+  const {users,workers}=await loadTeam();
+  const docs = needsSync()?await fetchFS():loadFS();
+  const transfers = refreshTransfers(docs,users,workers);
 
-  for (const d of docs) {
-    const user = cleanCell(d.user || "");
-    const wid  = cleanCell(d.workerId || "");
-    if (!users.has(user) && !workers.has(wid)) continue;
+  const Q=[], T=[];
+  let qSum=0, tSum=0;
 
-    const current  = toNum(d.currentEarnings);
-    const nextDate = d.nextTransferDate || d.lastTransferDate || "—";
-
-    if (current >= 8) {
-      QUALIFIED_DATA.push({ user, wid, current, nextDate });
-      sumQualifiedCurrent += current;
-    }
-  }
-
-  // Transferred (ALL transfers in window; supports old cache objects too)
-  TRANSFERRED_DATA = (transferDocs || [])
-    .filter(t => {
-      const user = cleanCell(t.user || "");
-      const wid  = cleanCell(t.workerId || "");
-      return users.has(user) || workers.has(wid);
-    })
-    .map(t => {
-      const amt = Number(t.amount) || 0;
-      const dateStr = cleanCell(t.transferDateStr || t.date || "");
-      const lm = toNum(t.lastMonthEarnings);
-
-      const mismatch = (shouldConsiderMismatch(dateStr) && lm > 0 && amt > 0 && !nearlyEqual(lm, amt, 0.01));
-
-      return {
-        id: t.id,
-        user: cleanCell(t.user || ""),
-        wid:  cleanCell(t.workerId || ""),
-        amount: amt,
-        date: dateStr,
-        mismatch,
-        _fromOldCache: !!t._fromOldCache || String(t.id || "").startsWith("old_")
-      };
-    })
-    // DEBUG MODE
-  .filter(t => true);
-
-  const sumTransfers = TRANSFERRED_DATA.reduce((acc, x) => acc + (x.amount || 0), 0);
-  const finalQualifiedTotal = sumQualifiedCurrent + sumTransfers;
-
-  QUALIFIED_DATA.sort((a,b)=> b.current - a.current);
-  TRANSFERRED_DATA.sort((a,b)=> {
-    const da = parseAnyDate(a.date)?.getTime() ?? 0;
-    const db = parseAnyDate(b.date)?.getTime() ?? 0;
-    return db - da;
+  docs.forEach(d=>{
+    const user=(d.user||"").trim();
+    const wid=(d.workerId||d.id||"").trim();
+    if(!users.has(user)&&!workers.has(wid)) return;
+    const cur=+d.currentEarnings||0;
+    if(cur>=8){ Q.push({user,wid,cur,next:d.nextTransferDate||"—"}); qSum+=cur; }
   });
 
-  totalQEl.innerHTML =
-    `Qualified (current ≥ $8) + Transfers: <b>$${finalQualifiedTotal.toFixed(2)}</b> (${QUALIFIED_DATA.length} users)`;
+  transfers.forEach(t=>{ T.push(t); tSum+=t.amount; });
 
-  totalTransEl.innerHTML =
-    `Transferred (window): <b>$${sumTransfers.toFixed(2)}</b> (${TRANSFERRED_DATA.length} transfers)`;
+  document.getElementById("totalQualified").innerHTML =
+    `Qualified (current ≥ $8) + Active Transfers: <b>$${(qSum+tSum).toFixed(2)}</b> (${Q.length} users)`;
 
-  renderQualifiedTable();
-  initTransferredFilterAndTable();
-  applyTransfersVisibilityRule();
+  document.getElementById("totalTransferred").innerHTML =
+    `Transferred (after 5th, till next 6th): <b>$${tSum.toFixed(2)}</b> (${T.length} transfers)`;
 
-  // invalidate excel caches when data changes
-  localStorage.removeItem(EXCEL_EARN_KEY);
-  localStorage.removeItem(EXCEL_EARN_DATE);
-  localStorage.removeItem(EXCEL_TR_DATE);
-
-  loadingEl.style.display = "none";
-}
-
-/* ======================================================
-   RENDER – QUALIFIED TAB
-====================================================== */
-function renderQualifiedTable() {
-  const tbody = document.getElementById("qualified-body");
-  tbody.innerHTML = "";
-
-  for (const r of QUALIFIED_DATA) {
-    const tr = document.createElement("tr");
-    tr.innerHTML = `
-      <td>${r.user}</td>
-      <td>${r.wid}</td>
-      <td style="color:#15803d;font-weight:bold">${r.current.toFixed(2)}</td>
-      <td>${r.nextDate || "—"}</td>
-    `;
-    tbody.appendChild(tr);
-  }
-}
-
-/* ======================================================
-   RENDER – TRANSFERRED TAB + DATE FILTER
-====================================================== */
-function initTransferredFilterAndTable() {
-  const select = document.getElementById("transferDateFilter");
-
-  const dates = Array.from(
-    new Set(TRANSFERRED_DATA.map(r => fmtDate(r.date)).filter(Boolean))
-  ).sort((a,b)=> new Date(a) - new Date(b));
-
-  select.innerHTML = `<option value="">All Dates</option>`;
-  for (const d of dates) {
-    const opt = document.createElement("option");
-    opt.value = d;
-    opt.textContent = d;
-    select.appendChild(opt);
-  }
-
-  select.onchange = () => renderTransferredTable();
-  renderTransferredTable();
-}
-
-function renderTransferredTable() {
-  const tbody = document.getElementById("transferred-body");
-  const filterVal = document.getElementById("transferDateFilter").value;
-  tbody.innerHTML = "";
-
-  const data = TRANSFERRED_DATA.filter(r => {
-    const display = fmtDate(r.date);
-    if (!filterVal) return true;
-    return display === filterVal;
+  const qb=document.getElementById("qualified-body"); qb.innerHTML="";
+  Q.sort((a,b)=>b.cur-a.cur).forEach(r=>{
+    qb.innerHTML+=`<tr><td>${r.user}</td><td>${r.wid}</td><td><b>${r.cur.toFixed(2)}</b></td><td>${r.next}</td></tr>`;
   });
 
-  if (data.length === 0) {
-    const tr = document.createElement("tr");
-    tr.innerHTML = `<td colspan="5" style="text-align:center;color:#6b7280;">No transferred records for this filter.</td>`;
-    tbody.appendChild(tr);
-    return;
-  }
-
-  const canDelete = isDeleteUnlocked();
-
-  for (const r of data) {
-    const isOld = !!r._fromOldCache || String(r.id || "").startsWith("old_");
-
-    const tr = document.createElement("tr");
-    tr.innerHTML = `
-      <td>${r.user}</td>
-      <td class="${r.mismatch ? "mismatch-wid" : ""}">${r.wid}</td>
-      <td style="color:#b91c1c;font-weight:bold">${r.amount.toFixed(2)}</td>
-      <td>${fmtDate(r.date)}</td>
-      <td class="del-col">
-        ${(!isOld && canDelete) ? `<button class="del-btn" data-id="${r.id}">🗑 Delete</button>` : ""}
-      </td>
-    `;
-    tbody.appendChild(tr);
-  }
-}
-
-/* ======================================================
-   DELETE HANDLER (1 Firestore call per delete)
-====================================================== */
-document.addEventListener("click", async (e) => {
-  const btn = e.target.closest(".del-btn");
-  if (!btn) return;
-
-  if (!isDeleteUnlocked()) {
-    alert("Unlock delete first.");
-    return;
-  }
-
-  const id = btn.getAttribute("data-id");
-  if (!id) return;
-
-  if (String(id).startsWith("old_")) {
-    alert("This record is from old local cache, not a Firestore transfer_logs doc. Delete is disabled.");
-    return;
-  }
-
-  const ok = confirm(`Delete this transfer record?\n\nDoc ID: ${id}`);
-  if (!ok) return;
-
-  try {
-    await deleteDoc(doc(earningsDB, "transfer_logs", id));
-
-    // Remove from memory
-    TRANSFERRED_DATA = TRANSFERRED_DATA.filter(x => String(x.id) !== String(id));
-
-    // Remove from transfer cache too (so it won't re-appear today)
-    const cached = loadTransferCache();
-    const updated = (cached || []).filter(x => String(x.id) !== String(id));
-    localStorage.setItem(TR_CACHE_KEY, JSON.stringify(updated));
-
-    // Re-render
-    initTransferredFilterAndTable();
-    alert("✅ Deleted.");
-  } catch (err) {
-    console.error(err);
-    alert("❌ Delete failed. Check Firestore rules / permissions.");
-  }
-});
-
-/* ======================================================
-   TRANSFERS VISIBILITY
-====================================================== */
-function setTransfersHidden(hidden) {
-  const panel = document.getElementById("panel-transferred");
-  const btn = document.getElementById("toggleTransfers");
-  const hint = document.getElementById("transferHint");
-
-  if (!panel || !btn || !hint) return;
-
-  if (hidden) {
-    panel.classList.add("soft-hidden");
-    btn.textContent = "👁️ Show Transfers";
-    hint.textContent = "Transfers are hidden (after 8th). Click “Show Transfers” to view anytime till month end.";
-  } else {
-    panel.classList.remove("soft-hidden");
-    btn.textContent = "🙈 Hide Transfers";
-    hint.textContent = "Transfers are visible.";
-  }
-  localStorage.setItem("transfers_ui_hidden", hidden ? "1" : "0");
-}
-
-function applyTransfersVisibilityRule() {
-  const after8 = shouldAutoHideTransfers();
-  const manualPref = localStorage.getItem("transfers_ui_hidden");
-
-  if (manualPref === "0") return setTransfersHidden(false);
-  if (manualPref === "1") return setTransfersHidden(true);
-
-  setTransfersHidden(after8);
-}
-
-function toggleTransfersVisibility() {
-  const isHidden = (localStorage.getItem("transfers_ui_hidden") === "1");
-  setTransfersHidden(!isHidden);
-}
-
-/* ======================================================
-   TABS
-====================================================== */
-function switchTab(tab) {
-  const qTabBtn = document.getElementById("tab-qualified");
-  const tTabBtn = document.getElementById("tab-transferred");
-  const qPanel  = document.getElementById("panel-qualified");
-  const tPanel  = document.getElementById("panel-transferred-wrap");
-
-  if (tab === "qualified") {
-    qTabBtn.classList.add("active-tab");
-    tTabBtn.classList.remove("active-tab");
-    qPanel.style.display = "block";
-    tPanel.style.display = "none";
-  } else {
-    tTabBtn.classList.add("active-tab");
-    qTabBtn.classList.remove("active-tab");
-    tPanel.style.display = "block";
-    qPanel.style.display = "none";
-    applyTransfersVisibilityRule();
-    renderTransferredTable();
-  }
-}
-
-/* ======================================================
-   EXCEL EXPORTS
-====================================================== */
-function ensureXLSX() {
-  if (!window.XLSX) {
-    alert("XLSX not loaded. Check internet / CDN blocked.");
-    return false;
-  }
-  return true;
-}
-
-function buildDailyEarningsRowsFromDocs(docs, teamMap) {
-  const rows = [];
-
-  const byWid = new Map();
-  const byUser = new Map();
-  for (const d of docs) {
-    const wid = cleanCell(d.workerId || "");
-    const user = cleanCell(d.user || "");
-    if (wid) byWid.set(wid, d);
-    if (user) byUser.set(user, d);
-  }
-
-  for (const [user, wid] of teamMap.entries()) {
-    const rec = byWid.get(wid) || byUser.get(user);
-    if (!rec) {
-      rows.push({
-        "User": user,
-        "Worker ID": wid,
-        "Current Earnings": "",
-        "Last Month Earnings": "",
-        "Next Transfer Date": "",
-        "Last Transfer Amount": "",
-        "Last Transfer Date": ""
-      });
-      continue;
-    }
-
-    rows.push({
-      "User": user,
-      "Worker ID": wid,
-      "Current Earnings": cleanCell(rec.currentEarnings ?? ""),
-      "Last Month Earnings": cleanCell(rec.lastMonthEarnings ?? ""),
-      "Next Transfer Date": cleanCell(rec.nextTransferDate ?? rec.lastTransferDate ?? ""),
-      "Last Transfer Amount": cleanCell(rec.lastTransferAmount ?? ""),
-      "Last Transfer Date": cleanCell(rec.lastTransferDate ?? "")
-    });
-  }
-
-  return rows;
-}
-
-function getFilteredTransferredForExport() {
-  const filterVal = document.getElementById("transferDateFilter")?.value || "";
-  const data = TRANSFERRED_DATA.filter(r => {
-    const display = fmtDate(r.date);
-    if (!filterVal) return true;
-    return display === filterVal;
+  const tb=document.getElementById("transferred-body"); tb.innerHTML="";
+  T.sort((a,b)=>b.amount-a.amount).forEach(r=>{
+    tb.innerHTML+=`<tr><td>${r.user}</td><td>${r.workerId}</td><td><b>${r.amount.toFixed(2)}</b></td><td>${fmt(r.date)}</td></tr>`;
   });
-
-  return data.map(r => ({
-    "User": r.user,
-    "Worker ID": r.wid,
-    "Transferred Amount": Number(r.amount || 0).toFixed(2),
-    "Transferred Date": fmtDate(r.date),
-    "Mismatch (check)": r.mismatch ? "YES" : ""
-  }));
 }
 
-async function exportDailyEarningsExcel() {
-  if (!ensureXLSX()) return;
+/* ================= TABS ================= */
+const tab=q=>{
+  document.getElementById("panel-qualified").style.display=q?"block":"none";
+  document.getElementById("panel-transferred").style.display=q?"none":"block";
+};
 
-  if (localStorage.getItem(EXCEL_EARN_DATE) === today()) {
-    const cached = JSON.parse(localStorage.getItem(EXCEL_EARN_KEY) || "[]");
-    if (cached.length) return writeExcel(cached, "Daily Earnings", `Daily_Earnings_AllUsers_${today()}.xlsx`);
-  }
-
-  const docs = loadCache();
-  if (!docs.length) {
-    alert("No cached Firestore earnings data yet. Click 🔄 Sync Now once, then export.");
-    return;
-  }
-
-  const teamMap = await loadTeamCSV();
-  const rows = buildDailyEarningsRowsFromDocs(docs, teamMap);
-
-  localStorage.setItem(EXCEL_EARN_KEY, JSON.stringify(rows));
-  localStorage.setItem(EXCEL_EARN_DATE, today());
-
-  writeExcel(rows, "Daily Earnings", `Daily_Earnings_AllUsers_${today()}.xlsx`);
-}
-
-async function exportTransferredExcel() {
-  if (!ensureXLSX()) return;
-
-  const key = (localStorage.getItem("transferDateFilter_last") || "") + "|" + today();
-  const cacheKey = EXCEL_TR_KEY + "::" + key;
-
-  const cached = JSON.parse(localStorage.getItem(cacheKey) || "[]");
-  if (cached.length) return writeExcel(cached, "Transferred", `Transferred_Report_${today()}.xlsx`);
-
-  const rows = getFilteredTransferredForExport();
-  if (!rows.length) {
-    alert("No transferred records for current filter.");
-    return;
-  }
-
-  localStorage.setItem(cacheKey, JSON.stringify(rows));
-  localStorage.setItem(EXCEL_TR_DATE, today());
-
-  writeExcel(rows, "Transferred", `Transferred_Report_${today()}.xlsx`);
-}
-
-function writeExcel(rows, sheetName, fileName) {
-  const ws = XLSX.utils.json_to_sheet(rows);
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, sheetName);
-  XLSX.writeFile(wb, fileName);
-}
-
-/* ======================================================
-   INIT
-====================================================== */
-window.addEventListener("DOMContentLoaded", () => {
-  updateCountdown();
-  setInterval(updateCountdown, 60000);
-
-  if (isDeleteUnlocked()) document.body.classList.add("del-on");
-
-  document.getElementById("tab-qualified").onclick   = () => switchTab("qualified");
-  document.getElementById("tab-transferred").onclick = () => switchTab("transferred");
-
-  // Sync Now: forces BOTH earnings + transfer logs refresh
-  document.getElementById("syncNow").onclick = () => buildData({ forceSync: true });
-
-  document.getElementById("toggleTransfers").onclick = toggleTransfersVisibility;
-
-  document.getElementById("downloadDailyExcel").onclick = exportDailyEarningsExcel;
-  document.getElementById("downloadTransfersExcel").onclick = () => {
-    const f = document.getElementById("transferDateFilter")?.value || "";
-    localStorage.setItem("transferDateFilter_last", f);
-    exportTransferredExcel();
-  };
-
-  document.getElementById("transferDateFilter").addEventListener("change", () => {
-    const f = document.getElementById("transferDateFilter")?.value || "";
-    localStorage.setItem("transferDateFilter_last", f);
-  });
-
-  // Delete unlock/lock (session only)
-  document.getElementById("unlockDelete").onclick = async () => {
-    await unlockDeleteSession();
-    renderTransferredTable();
-  };
-  document.getElementById("lockDelete").onclick = () => {
-    lockDeleteSession();
-    renderTransferredTable();
-  };
-
-  switchTab("qualified");
-  buildData();
+window.addEventListener("DOMContentLoaded",()=>{
+  document.getElementById("tab-qualified").onclick=()=>tab(true);
+  document.getElementById("tab-transferred").onclick=()=>tab(false);
+  document.getElementById("syncNow").onclick=()=>{localStorage.clear();location.reload();};
+  tab(true);
+  build();
 });
 </script>
 
 <style>
-body { font-family:"Segoe UI",Arial,sans-serif; background:#f8fafc; padding:20px; }
-h1 { text-align:center; color:#0f62fe; margin: 0 0 10px 0; }
-#loading { text-align:center; color:#6b7280; margin-top:10px; }
-.summary-bar { text-align:center; font-size:16px; margin-top:10px; }
-#next-sync { text-align:center; margin-top:6px; margin-bottom:12px; color:#6b7280; }
-
-/* Tabs */
-.tabs { display:flex; justify-content:center; margin:10px 0 15px 0; gap:8px; flex-wrap: wrap; }
-.tab-btn {
-  padding:8px 16px; border-radius:999px; border:1px solid #d1d5db;
-  background:#e5e7eb; color:#374151; cursor:pointer; font-size:14px; font-weight:600;
-}
-.tab-btn.active-tab { background:#0f62fe; color:#fff; border-color:#0f62fe; }
-
-.table-wrap { width:95%; margin:0 auto 20px auto; }
-table {
-  width:100%; background:#fff; border-radius:8px; border-collapse:collapse;
-  box-shadow:0 2px 6px rgba(0,0,0,0.12); overflow:hidden;
-}
-th,td { padding:10px; border-bottom:1px solid #e5e7eb; }
-th { background:#0f62fe; color:#fff; }
-
-.filter-bar { margin-bottom:10px; font-size:14px; color:#374151; }
-.filter-bar select {
-  margin-left:6px; padding:4px 8px; border-radius:6px; border:1px solid #d1d5db; font-size:14px;
-}
-
-.top-actions { text-align:center; margin: 10px 0 0 0; }
-.sync-btn {
-  background:#111827; color:#fff; padding:7px 12px; border:none; border-radius:8px;
-  cursor:pointer; font-weight:700; font-size:13px;
-}
-.sync-btn:hover { opacity: .9; }
-.small-note { color:#6b7280; font-size:12px; margin-top:6px; }
-
-/* highlight only WorkerID cell for mismatch */
-.mismatch-wid{
-  background:#fff7ed;
-  border-left:4px solid #f97316;
-  font-weight:800;
-}
-
-/* Transfers controls */
-.transfer-tools{
-  display:flex;
-  justify-content:center;
-  align-items:center;
-  gap:10px;
-  margin:10px 0 8px 0;
-  flex-wrap:wrap;
-}
-.toggle-btn{
-  background:#0d9488;
-  color:#fff;
-  padding:7px 12px;
-  border:none;
-  border-radius:8px;
-  cursor:pointer;
-  font-weight:800;
-  font-size:13px;
-}
-.toggle-btn:hover{ background:#0f766e; }
-.hint{
-  color:#6b7280;
-  font-size:12px;
-}
-
-/* Excel buttons */
-.excel-bar{
-  display:flex;
-  justify-content:center;
-  gap:10px;
-  flex-wrap:wrap;
-  margin:10px 0 8px 0;
-}
-.excel-btn{
-  background:#0d9488;
-  color:#fff;
-  padding:7px 12px;
-  border:none;
-  border-radius:8px;
-  cursor:pointer;
-  font-weight:800;
-  font-size:13px;
-}
-.excel-btn:hover{ background:#0f766e; }
-
-/* Soft hide */
-.soft-hidden{
-  display:none !important;
-}
-
-/* Delete column hidden unless delete is unlocked */
-.del-col { display:none; }
-body.del-on .del-col { display:table-cell; }
-
-.del-btn{
-  background:#991b1b;
-  color:#fff;
-  border:none;
-  border-radius:8px;
-  padding:6px 10px;
-  cursor:pointer;
-  font-weight:800;
-  font-size:12px;
-}
-.del-btn:hover{ opacity:.9; }
+body{font-family:Segoe UI;background:#f8fafc;padding:20px}
+h1{text-align:center;color:#0f62fe}
+.tabs{text-align:center;margin:12px}
+.tab-btn{padding:8px 16px;border-radius:20px;border:1px solid #ccc;margin:4px;cursor:pointer}
+table{width:95%;margin:auto;background:#fff;border-collapse:collapse;box-shadow:0 2px 6px #0002}
+th,td{padding:10px;border-bottom:1px solid #e5e7eb}
+th{background:#0f62fe;color:#fff}
 </style>
 </head>
 
 <body>
 <h1>💰 Daily MTurk Earnings Monitor</h1>
 
-<div class="top-actions">
-  <button id="syncNow" class="sync-btn">🔄 Sync Now</button>
-  <div class="small-note">
-    Smart transfers sync: uses localStorage month/window transfers if available (no Firestore call). Otherwise reads transfer_logs once/day.
-  </div>
+<div style="text-align:center;margin-bottom:10px">
+  <button id="syncNow">🔄 Force Sync</button>
 </div>
 
-<div id="loading">Loading…</div>
-
-<div class="summary-bar" id="totalQualified"></div>
-<div class="summary-bar" id="totalTransferred"></div>
-<div id="next-sync"></div>
-
-<!-- Excel buttons (global) -->
-<div class="excel-bar">
-  <button id="downloadDailyExcel" class="excel-btn">📥 Daily Earnings Excel (All Users)</button>
-  <button id="downloadTransfersExcel" class="excel-btn">📥 Transferred Excel (Current Filter)</button>
-</div>
+<div id="totalQualified" style="text-align:center;font-weight:bold"></div>
+<div id="totalTransferred" style="text-align:center"></div>
 
 <div class="tabs">
-  <button id="tab-qualified" class="tab-btn active-tab">Qualified Users (current ≥ $8)</button>
-  <button id="tab-transferred" class="tab-btn">Transferred (window)</button>
+  <button id="tab-qualified" class="tab-btn">Qualified</button>
+  <button id="tab-transferred" class="tab-btn">Transferred</button>
 </div>
 
-<!-- QUALIFIED -->
-<div id="panel-qualified" class="table-wrap">
-  <table>
-    <thead>
-      <tr>
-        <th>User</th>
-        <th>Worker ID</th>
-        <th>Current Earnings ($)</th>
-        <th>Next Transfer Date</th>
-      </tr>
-    </thead>
-    <tbody id="qualified-body"></tbody>
-  </table>
+<div id="panel-qualified">
+<table>
+<thead><tr><th>User</th><th>Worker ID</th><th>Current ($)</th><th>Next Transfer</th></tr></thead>
+<tbody id="qualified-body"></tbody>
+</table>
 </div>
 
-<!-- TRANSFERRED WRAP (tab panel) -->
-<div id="panel-transferred-wrap" class="table-wrap" style="display:none;">
-
-  <div class="transfer-tools">
-    <button id="toggleTransfers" class="toggle-btn">🙈 Hide Transfers</button>
-
-    <!-- Delete controls -->
-    <button id="unlockDelete" class="toggle-btn">🔐 Unlock Delete</button>
-    <button id="lockDelete" class="toggle-btn">🔒 Lock</button>
-
-    <div id="transferHint" class="hint"></div>
-  </div>
-
-  <!-- This is what gets auto-hidden -->
-  <div id="panel-transferred">
-    <div class="filter-bar">
-      Filter by Transfer Date:
-      <select id="transferDateFilter">
-        <option value="">All Dates</option>
-      </select>
-    </div>
-
-    <table>
-      <thead>
-        <tr>
-          <th>User</th>
-          <th>Worker ID</th>
-          <th>Transferred Amount ($)</th>
-          <th>Transferred Date</th>
-          <th class="del-col">Action</th>
-        </tr>
-      </thead>
-      <tbody id="transferred-body"></tbody>
-    </table>
-  </div>
+<div id="panel-transferred" style="display:none">
+<table>
+<thead><tr><th>User</th><th>Worker ID</th><th>Transferred ($)</th><th>Date</th></tr></thead>
+<tbody id="transferred-body"></tbody>
+</table>
 </div>
 
 </body>
