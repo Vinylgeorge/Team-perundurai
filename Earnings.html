@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>💰 MTurk Earnings Monitor (Qualified + Transferred)</title>
+<title>💰 MTurk Earnings Monitor (Single Sheet)</title>
 
 <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
 
@@ -31,25 +31,69 @@ const SYNC_KEY  = "earnings_last_sync";
 const TRANSFERS_KEY = "earnings_transfers_cache";
 
 /* ================= HELPERS ================= */
-const today = () => new Date().toISOString().slice(0,10);
-const needsSync = () => localStorage.getItem(SYNC_KEY) !== today();
-const markSynced = () => localStorage.setItem(SYNC_KEY, today());
+const todayStr = () => new Date().toISOString().slice(0,10);
+const needsSync = () => localStorage.getItem(SYNC_KEY) !== todayStr();
+const markSynced = () => localStorage.setItem(SYNC_KEY, todayStr());
 
 function parseDate(v){
   if(!v) return null;
-  const d = new Date(v.includes("/") ? v.replace(/(\d+)\/(\d+)\/(\d+)/,"$3-$1-$2") : v);
-  return isNaN(d) ? null : d;
+
+  // Firestore Timestamp object: {seconds, nanoseconds} or has toDate()
+  if (typeof v === "object") {
+    if (typeof v.toDate === "function") {
+      const d = v.toDate();
+      return isNaN(d) ? null : d;
+    }
+    if (typeof v.seconds === "number") {
+      const d = new Date(v.seconds * 1000);
+      return isNaN(d) ? null : d;
+    }
+  }
+
+  // Strings: "MM/DD/YYYY" or "YYYY-MM-DD"
+  if (typeof v === "string") {
+    const s = v.trim();
+    const d = new Date(s.includes("/") ? s.replace(/(\d+)\/(\d+)\/(\d+)/,"$3-$1-$2") : s);
+    return isNaN(d) ? null : d;
+  }
+
+  // Date object
+  if (v instanceof Date) return isNaN(v) ? null : v;
+
+  return null;
 }
-function isAfter5th(v){
-  const d = parseDate(v); return d && d.getDate() > 5;
+
+function dateOnly(d){
+  if(!d) return null;
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
 }
-function activeUntilNext6th(v){
-  const d = parseDate(v);
+function inRange(d, fromD, toD){
   if(!d) return false;
-  const cutoff = new Date(d.getFullYear(), d.getMonth()+1, 6);
-  return new Date() < cutoff;
+  const x = dateOnly(d).getTime();
+  const a = fromD ? dateOnly(fromD).getTime() : -Infinity;
+  const b = toD ? dateOnly(toD).getTime() : Infinity;
+  return x >= a && x <= b;
 }
-const fmt = v => parseDate(v)?.toLocaleDateString() || v || "—";
+function fmt(d){
+  const x = parseDate(d);
+  return x ? x.toLocaleDateString() : (d || "—");
+}
+
+function getDocAnyDate(d){
+  // If your earnings_logs docs contain any “updated” / “date” / “created” fields,
+  // we will use them for date filtering of the Qualified rows.
+  // If none exist, Qualified rows will still appear based on currentEarnings only.
+  return (
+    parseDate(d.date) ||
+    parseDate(d.updatedAt) ||
+    parseDate(d.updated_on) ||
+    parseDate(d.lastUpdated) ||
+    parseDate(d.createdAt) ||
+    parseDate(d.ts) ||
+    parseDate(d.timestamp) ||
+    null
+  );
+}
 
 /* ================= TEAM CSV ================= */
 async function loadTeam(){
@@ -80,7 +124,8 @@ const loadTransfers=()=>JSON.parse(localStorage.getItem(TRANSFERS_KEY)||"[]");
 const saveTransfers=a=>localStorage.setItem(TRANSFERS_KEY,JSON.stringify(a));
 
 function refreshTransfers(docs,users,workers){
-  let cache = loadTransfers().filter(t=>activeUntilNext6th(t.date));
+  // keep your existing cache behavior, but we’ll still filter by From/To later
+  let cache = loadTransfers();
 
   for(const d of docs){
     const user=(d.user||"").trim();
@@ -89,7 +134,7 @@ function refreshTransfers(docs,users,workers){
 
     const amt=+d.lastTransferAmount||0;
     const dt=d.lastTransferDate;
-    if(amt<8||!dt||!isAfter5th(dt)||!activeUntilNext6th(dt)) continue;
+    if(amt<=0 || !dt) continue;
 
     if(!cache.some(x=>x.user===user&&x.workerId===wid&&x.amount===amt&&x.date===dt)){
       cache.push({user,workerId:wid,amount:amt,date:dt});
@@ -99,96 +144,202 @@ function refreshTransfers(docs,users,workers){
   return cache;
 }
 
-/* ================= BUILD ================= */
-async function build(){
-  const {users,workers}=await loadTeam();
-  const docs = needsSync()?await fetchFS():loadFS();
-  const transfers = refreshTransfers(docs,users,workers);
-
-  const Q=[], T=[];
-  let qSum=0, tSum=0;
-
-  docs.forEach(d=>{
-    const user=(d.user||"").trim();
-    const wid=(d.workerId||d.id||"").trim();
-    if(!users.has(user)&&!workers.has(wid)) return;
-    const cur=+d.currentEarnings||0;
-    if(cur>=8){ Q.push({user,wid,cur,next:d.nextTransferDate||"—"}); qSum+=cur; }
-  });
-
-  transfers.forEach(t=>{ T.push(t); tSum+=t.amount; });
-
-  document.getElementById("totalQualified").innerHTML =
-    `Qualified (current ≥ $8) + Active Transfers: <b>$${(qSum+tSum).toFixed(2)}</b> (${Q.length} users)`;
-
-  document.getElementById("totalTransferred").innerHTML =
-    `Transferred (after 5th, till next 6th): <b>$${tSum.toFixed(2)}</b> (${T.length} transfers)`;
-
-  const qb=document.getElementById("qualified-body"); qb.innerHTML="";
-  Q.sort((a,b)=>b.cur-a.cur).forEach(r=>{
-    qb.innerHTML+=`<tr><td>${r.user}</td><td>${r.wid}</td><td><b>${r.cur.toFixed(2)}</b></td><td>${r.next}</td></tr>`;
-  });
-
-  const tb=document.getElementById("transferred-body"); tb.innerHTML="";
-  T.sort((a,b)=>b.amount-a.amount).forEach(r=>{
-    tb.innerHTML+=`<tr><td>${r.user}</td><td>${r.workerId}</td><td><b>${r.amount.toFixed(2)}</b></td><td>${fmt(r.date)}</td></tr>`;
-  });
+/* ================= BUILD SINGLE SHEET ================= */
+function getFromTo(){
+  const from = parseDate(document.getElementById("fromDate").value);
+  const to   = parseDate(document.getElementById("toDate").value);
+  return {from, to};
 }
 
-/* ================= TABS ================= */
-const tab=q=>{
-  document.getElementById("panel-qualified").style.display=q?"block":"none";
-  document.getElementById("panel-transferred").style.display=q?"none":"block";
-};
+function buildSingleTable(docs, transfers, users, workers){
+  const {from, to} = getFromTo();
+
+  const rows = [];
+  const seen = new Set();
+
+  // 1) Qualified (currentEarnings >= 8)
+  for (const d of docs){
+    const user=(d.user||"").trim();
+    const wid=(d.workerId||d.id||"").trim();
+    if(!users.has(user)&&!workers.has(wid)) continue;
+
+    const cur = +d.currentEarnings || 0;
+    if (cur < 8) continue;
+
+    // If your doc has a usable date field, filter it by From/To.
+    // If there is NO doc date field, we include it (since it's “current” qualification).
+    const docDate = getDocAnyDate(d);
+    const okByDate = docDate ? inRange(docDate, from, to) : true;
+    if (!okByDate) continue;
+
+    const key = `Q|${user}|${wid}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    rows.push({
+      Type: "Qualified (Current ≥ 8)",
+      User: user,
+      "Worker ID": wid,
+      Amount: cur,
+      Date: docDate ? fmt(docDate) : "—",
+      "Transfer Date": "—",
+      "Next Transfer": d.nextTransferDate || "—"
+    });
+  }
+
+  // 2) Transferred (lastTransferDate in From/To)
+  for (const t of transfers){
+    const user=(t.user||"").trim();
+    const wid=(t.workerId||"").trim();
+    if(!users.has(user)&&!workers.has(wid)) continue;
+
+    const dt = parseDate(t.date);
+    if (!inRange(dt, from, to)) continue;
+
+    const amt = +t.amount || 0;
+    const key = `T|${user}|${wid}|${amt}|${t.date}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    rows.push({
+      Type: "Transferred",
+      User: user,
+      "Worker ID": wid,
+      Amount: amt,
+      Date: "—",
+      "Transfer Date": fmt(dt),
+      "Next Transfer": "—"
+    });
+  }
+
+  // sort: transfers first by date desc, then qualified by amount desc
+  rows.sort((a,b)=>{
+    const aTd = parseDate(a["Transfer Date"]);
+    const bTd = parseDate(b["Transfer Date"]);
+    if (a.Type !== b.Type) return a.Type === "Transferred" ? -1 : 1;
+    if (a.Type === "Transferred") return (bTd?.getTime()||0) - (aTd?.getTime()||0);
+    return (+b.Amount||0) - (+a.Amount||0);
+  });
+
+  // render
+  const tb = document.getElementById("single-body");
+  tb.innerHTML = "";
+  for (const r of rows){
+    tb.innerHTML += `
+      <tr>
+        <td>${r.Type}</td>
+        <td>${r.User}</td>
+        <td>${r["Worker ID"]}</td>
+        <td><b>${(+r.Amount).toFixed(2)}</b></td>
+        <td>${r.Date}</td>
+        <td>${r["Transfer Date"]}</td>
+        <td>${r["Next Transfer"]}</td>
+      </tr>`;
+  }
+
+  // totals
+  const tCount = rows.filter(x=>x.Type==="Transferred").length;
+  const qCount = rows.filter(x=>x.Type!=="Transferred").length;
+  const tSum = rows.filter(x=>x.Type==="Transferred").reduce((s,x)=>s+(+x.Amount||0),0);
+  const qSum = rows.filter(x=>x.Type!=="Transferred").reduce((s,x)=>s+(+x.Amount||0),0);
+
+  document.getElementById("summary").innerHTML =
+    `From <b>${document.getElementById("fromDate").value || "—"}</b> to <b>${document.getElementById("toDate").value || "—"}</b> →
+     Qualified: <b>${qCount}</b> ($${qSum.toFixed(2)}) |
+     Transferred: <b>${tCount}</b> ($${tSum.toFixed(2)}) |
+     Total rows: <b>${rows.length}</b>`;
+}
+
+function exportSingle(){
+  const table = document.getElementById("single-table");
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.table_to_sheet(table);
+  XLSX.utils.book_append_sheet(wb, ws, "Qualified_And_Transferred");
+
+  const from = document.getElementById("fromDate").value || "NA";
+  const to = document.getElementById("toDate").value || "NA";
+  XLSX.writeFile(wb, `MTurk_${from}_to_${to}_single_sheet.xlsx`);
+}
+
+/* ================= MAIN ================= */
+let _docs = [];
+let _transfers = [];
+let _team = null;
+
+async function build(){
+  _team = await loadTeam();
+  _docs = needsSync() ? await fetchFS() : loadFS();
+  _transfers = refreshTransfers(_docs, _team.users, _team.workers);
+
+  buildSingleTable(_docs, _transfers, _team.users, _team.workers);
+}
 
 window.addEventListener("DOMContentLoaded",()=>{
-  document.getElementById("tab-qualified").onclick=()=>tab(true);
-  document.getElementById("tab-transferred").onclick=()=>tab(false);
-  document.getElementById("syncNow").onclick=()=>{localStorage.clear();location.reload();};
-  tab(true);
+  // default dates: this month (1st → today)
+  const now = new Date();
+  const first = new Date(now.getFullYear(), now.getMonth(), 1);
+  document.getElementById("fromDate").value = first.toISOString().slice(0,10);
+  document.getElementById("toDate").value = new Date().toISOString().slice(0,10);
+
+  document.getElementById("syncNow").onclick=()=>{ localStorage.clear(); location.reload(); };
+  document.getElementById("applyFilter").onclick=()=>{
+    if(!_team) return;
+    buildSingleTable(_docs, _transfers, _team.users, _team.workers);
+  };
+  document.getElementById("exportBtn").onclick=exportSingle;
+
   build();
 });
 </script>
 
 <style>
 body{font-family:Segoe UI;background:#f8fafc;padding:20px}
-h1{text-align:center;color:#0f62fe}
-.tabs{text-align:center;margin:12px}
-.tab-btn{padding:8px 16px;border-radius:20px;border:1px solid #ccc;margin:4px;cursor:pointer}
-table{width:95%;margin:auto;background:#fff;border-collapse:collapse;box-shadow:0 2px 6px #0002}
-th,td{padding:10px;border-bottom:1px solid #e5e7eb}
-th{background:#0f62fe;color:#fff}
+h1{text-align:center;color:#0f62fe;margin:0 0 10px}
+.controls{display:flex;flex-wrap:wrap;gap:10px;justify-content:center;align-items:center;margin:10px 0 12px}
+.controls label{font-size:13px;color:#374151}
+.controls input{padding:6px 8px;border:1px solid #d1d5db;border-radius:8px;background:#fff}
+.controls button{padding:7px 12px;border-radius:10px;border:1px solid #cbd5e1;background:#fff;cursor:pointer}
+#summary{text-align:center;margin:10px 0;font-weight:600;color:#111827}
+table{width:98%;margin:auto;background:#fff;border-collapse:collapse;box-shadow:0 2px 6px #0002}
+th,td{padding:10px;border-bottom:1px solid #e5e7eb;font-size:14px}
+th{background:#0f62fe;color:#fff;position:sticky;top:0}
 </style>
 </head>
 
 <body>
-<h1>💰 Daily MTurk Earnings Monitor</h1>
+<h1>💰 MTurk Qualified + Transferred (Single Sheet)</h1>
 
-<div style="text-align:center;margin-bottom:10px">
+<div class="controls">
   <button id="syncNow">🔄 Force Sync</button>
+
+  <label>From:
+    <input id="fromDate" type="date">
+  </label>
+
+  <label>To:
+    <input id="toDate" type="date">
+  </label>
+
+  <button id="applyFilter">✅ Apply</button>
+  <button id="exportBtn">📤 Export Excel</button>
 </div>
 
-<div id="totalQualified" style="text-align:center;font-weight:bold"></div>
-<div id="totalTransferred" style="text-align:center"></div>
+<div id="summary"></div>
 
-<div class="tabs">
-  <button id="tab-qualified" class="tab-btn">Qualified</button>
-  <button id="tab-transferred" class="tab-btn">Transferred</button>
-</div>
-
-<div id="panel-qualified">
-<table>
-<thead><tr><th>User</th><th>Worker ID</th><th>Current ($)</th><th>Next Transfer</th></tr></thead>
-<tbody id="qualified-body"></tbody>
+<table id="single-table">
+  <thead>
+    <tr>
+      <th>Type</th>
+      <th>User</th>
+      <th>Worker ID</th>
+      <th>Amount ($)</th>
+      <th>Doc Date</th>
+      <th>Transfer Date</th>
+      <th>Next Transfer</th>
+    </tr>
+  </thead>
+  <tbody id="single-body"></tbody>
 </table>
-</div>
-
-<div id="panel-transferred" style="display:none">
-<table>
-<thead><tr><th>User</th><th>Worker ID</th><th>Transferred ($)</th><th>Date</th></tr></thead>
-<tbody id="transferred-body"></tbody>
-</table>
-</div>
 
 </body>
 </html>
