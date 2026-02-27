@@ -1,4 +1,4 @@
-////// ==UserScript==
+// ==UserScript==
 // @name        MTurk Task → Firestore + User Mapping (TTL Auto-Expire 10m)
 // @namespace   Violentmonkey Scripts
 // @match       https://worker.mturk.com/projects/*/tasks/*
