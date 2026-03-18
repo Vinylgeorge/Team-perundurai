@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         MTurk First Choice Q1-Q3 Then Submit (Slow)
+// @name         Carelin-Q3 Then Submit (Slow)
 // @namespace    MTurkHelpers
 // @version      2.0
 // @description  For Q1/Q2/Q3 pages: click first choice in each question, then submit with human-like delay.
