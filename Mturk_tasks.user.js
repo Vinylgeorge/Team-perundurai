@@ -3,9 +3,9 @@
 // @namespace   Violentmonkey Scripts
 // @match       https://worker.mturk.com/projects/*/tasks/*
 // @grant        none
-// @version     4.5
-// @updateURL    https://raw.githubusercontent.com/Vinylgeorge/Team-perundurai/refs/heads/main/Mturk_tasks.user.js
-// @downloadURL  https://raw.githubusercontent.com/Vinylgeorge/Team-perundurai/refs/heads/main/Mturk_tasks.user.js
+// @version     4.6
+// @updateURL    https://github.com/Vinylgeorge/Team-perundurai/raw/refs/heads/main/Mturk_tasks.user.js
+// @downloadURL  https://github.com/Vinylgeorge/Team-perundurai/raw/refs/heads/main/Mturk_tasks.user.js
 // ==/UserScript==
 
 (function () {
