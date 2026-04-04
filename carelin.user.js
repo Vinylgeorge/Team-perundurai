@@ -1,14 +1,14 @@
 // ==UserScript==
 // @name         Carelin-Q3 Then Submit (Slow)
 // @namespace    MTurkHelpers
-// @version      .0
+// @version      2.1
 // @description  For Q1/Q2/Q3 pages: click first choice in each question, then submit with human-like delay.
 // @match        https://www.mturkcontent.com/*
 // @match        https://*.mturkcontent.com/*
+// @updateURL    https://github.com/mavericpartha/lokesh/raw/refs/heads/main/Carelin-Q3.user.js
+// @downloadURL  https://github.com/mavericpartha/lokesh/raw/refs/heads/main/Carelin-Q3.user.js
 // @grant        none
 // @run-at       document-idle
-// @updateURL    https://github.com/Vinylgeorge/Team-perundurai/raw/refs/heads/main/carelin.user.js
-// @downloadURL  https://github.com/Vinylgeorge/Team-perundurai/raw/refs/heads/main/carelin.user.js
 // ==/UserScript==
 
 (function () {
