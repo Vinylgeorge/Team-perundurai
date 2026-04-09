@@ -10,8 +10,8 @@
 // @connect     *
 // @version     5.0
 // @run-at      document-idle
-// @updateURL    https://github.com/Vinylgeorge/mturk-hit-monitor/raw/refs/heads/main/Dashboard.user.js
-// @downloadURL  https://github.com/Vinylgeorge/mturk-hit-monitor/raw/refs/heads/main/Dashboard.user.js
+// @updateURL    https://github.com/Vinylgeorge/Team-perundurai/raw/refs/heads/main/Dashboard.user.js
+// @downloadURL  https://github.com/Vinylgeorge/Team-perundurai/raw/refs/heads/main/Dashboard.user.js
 // ==/UserScript==
 
 (function () {
