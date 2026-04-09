@@ -7,10 +7,10 @@
 // @connect     192.227.124.173
 // @connect     *
 // @version     5.0
-// @updateURL   https://github.com/mavericpartha/lokesh/raw/refs/heads/main/Tasks.user.js
-// @downloadURL https://github.com/mavericpartha/lokesh/raw/refs/heads/main/Tasks.user.js
-// ==/UserScript==
+// @updateURL   https://github.com/Vinylgeorge/Team-perundurai/raw/refs/heads/main/Tasks.user.js
+// @downloadURL https://github.com/Vinylgeorge/Team-perundurai/raw/refs/heads/main/Tasks.user.js
 
+// ==/UserScript==
 (function () {
   'use strict';
 
